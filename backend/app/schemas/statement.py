@@ -1,0 +1,58 @@
+from datetime import date, datetime
+
+from pydantic import BaseModel
+
+
+class StatementResponse(BaseModel):
+    id: str
+    pdf_id: str | None = None
+    pdf_filename: str | None = None
+    bank_name: str
+    account_type: str
+    account_number_masked: str | None
+    statement_period_start: date | None
+    statement_period_end: date | None
+    due_date: date | None
+    min_amount_due: float | None
+    total_amount_due: float | None
+    credit_limit: float | None
+    opening_balance: float | None
+    closing_balance: float | None
+    parser_used: str
+    parse_status: str
+    transaction_count: int | None
+    source_type: str | None = None
+    is_reprocess: bool = False
+    reprocess_count: int = 1
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StatementListResponse(BaseModel):
+    items: list[StatementResponse]
+    total: int
+
+
+class StatementIntegrityResponse(BaseModel):
+    statement_id: str
+    account_type: str
+    status: str
+    transaction_count: int
+    debit_total: float
+    credit_total: float
+    net_activity: float
+    total_amount_due: float | None
+    min_amount_due: float | None
+    previous_balance: float | None
+    closing_balance: float | None
+    expected_closing_balance: float | None
+    due_gap: float | None
+    closing_balance_gap: float | None
+    tolerance_due: float
+    tolerance_balance: float
+    llm_status: str | None
+    llm_confidence: float | None
+    llm_reason: str | None
+    notes: list[str]

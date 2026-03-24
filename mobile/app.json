@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "HisabClub",
+    "slug": "hisabclub",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "scheme": "hisabclub",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1851B2"
+    },
+    "android": {
+      "package": "com.hisabclub.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#1851B2",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png"
+      },
+      "permissions": [
+        "android.permission.READ_SMS",
+        "android.permission.RECEIVE_SMS"
+      ]
+    },
+    "plugins": [
+      ["expo-build-properties", {
+        "android": {
+          "minSdkVersion": 24
+        }
+      }]
+    ],
+    "platforms": ["android"]
+  }
+}
