@@ -1,5 +1,5 @@
 export const APP_NAME = 'HisabClub';
-export const DEFAULT_API_URL = 'https://hisabclub-dev-api.ankit-tech.store/api/v1';
+export const DEFAULT_API_URL = 'http://localhost:8000/api/v1';
 
 export const STORAGE_KEYS = {
   TOKEN: 'hisabclub_token',

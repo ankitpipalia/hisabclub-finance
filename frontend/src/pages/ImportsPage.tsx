@@ -27,7 +27,7 @@ function parsePasswordMap(raw: string): Record<string, string> | undefined {
 }
 
 export default function ImportsPage() {
-  const [folderPath, setFolderPath] = useState('/home/ankit/Documents/FY24-25-Ankit-details');
+  const [folderPath, setFolderPath] = useState('/data/imports');
   const [maxFiles, setMaxFiles] = useState<number | ''>('');
   const [parseSupported, setParseSupported] = useState(true);
   const [dryRun, setDryRun] = useState(false);
@@ -124,7 +124,7 @@ export default function ImportsPage() {
             value={folderPath}
             onChange={(e) => setFolderPath(e.target.value)}
             className="hc-input"
-            placeholder="/home/ankit/Documents/FY24-25-Ankit-details"
+            placeholder="/data/imports"
           />
         </div>
 

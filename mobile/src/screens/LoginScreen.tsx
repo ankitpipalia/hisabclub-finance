@@ -37,7 +37,7 @@ export default function LoginScreen() {
   useEffect(() => {
     getServerUrl().then((url) => {
       // Pre-populate with stored URL or the default
-      setServerUrlLocal(url || 'https://hisabclub-dev-api.ankit-tech.store/api/v1');
+      setServerUrlLocal(url || 'http://localhost:8000/api/v1');
     });
   }, []);
 

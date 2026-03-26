@@ -12,10 +12,6 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 - Deterministic core logic, LLM only as feature-flagged fallback
 - Privacy-first: OTPs and personal messages never leave the device
 
-**Production URL:** `https://hisabclub-dev-api.ankit-tech.store` (Cloudflare Zero Trust tunnel → `192.168.1.69:8000`)
-
-**User credentials:** `desibabubro@gmail.com` / `Ankit@2002`
-
 ---
 
 ## Architecture Overview
@@ -69,7 +65,7 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 ## Directory Structure
 
 ```
-/home/ankit/Documents/personal-finance-app/
+<repo-root>/
 │
 ├── backend/                           # Python FastAPI backend
 │   ├── pyproject.toml                 # Dependencies (setuptools, pip install -e ".[dev]")
@@ -433,13 +429,13 @@ The `android/` directory is regenerated. You MUST:
 ### Running Natively (NOT Docker — GPU passthrough issues)
 ```bash
 llama-server \
-  --model /home/ankit/Documents/personal-finance-app/models/qwq-32b-q4_k_m.gguf \
+  --model <repo-root>/models/qwq-32b-q4_k_m.gguf \
   --host 0.0.0.0 --port 8080 \
   --ctx-size 4096 --n-gpu-layers 99
 ```
 
 ### Model Details
-- **File**: `/home/ankit/Documents/personal-finance-app/models/qwq-32b-q4_k_m.gguf` (19.8 GB)
+- **File**: `<repo-root>/models/qwq-32b-q4_k_m.gguf` (download separately, not committed)
 - **Model**: Qwen QWQ-32B, Q4_K_M quantization
 - **GPU**: NVIDIA RTX A5000 (24GB VRAM) — all 65 layers offloaded
 - **Performance**: ~27 tokens/sec
@@ -696,5 +692,5 @@ docker compose -f docker-compose.yml -f docker-compose.llm.yml up -d llm  # LLM 
 
 ## 2026-03-25 Knowledge Transfer Compliance
 - This file is the canonical transfer document for architecture, implemented scope, missing features, and future plans.
-- Memory sync source: `/home/ankit/Documents/personal-helper/memory/`.
+- Memory sync source: `<workspace-root>/personal-helper/memory/`.
 - Llama/QwQ model location and runtime assumptions must be updated here on every change.

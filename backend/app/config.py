@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     # Privacy and local processing guardrails
     local_only_mode: bool = True
-    local_allowed_roots: str = "/home/ankit/Documents"
+    local_allowed_roots: str = "/app/uploads,/app/models"
     local_allowed_llm_hosts: str = "localhost,127.0.0.1,::1"
 
     # Gmail Integration

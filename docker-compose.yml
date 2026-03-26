@@ -22,7 +22,6 @@ services:
       - "8000:8000"
     volumes:
       - ./uploads:/app/uploads
-      - /home/ankit/Documents:/home/ankit/Documents:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 10s
