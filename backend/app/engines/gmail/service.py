@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import logging
 import os
 import uuid
@@ -18,8 +17,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.engines.jobs.service import enqueue_parse_job
+from app.engines.parser.hints import normalize_bank_hint
+from app.engines.parser.password_patterns import resolve_pdf_password
 from app.models.connected_account import ConnectedAccount
 from app.models.raw_pdf import RawPdf
+from app.security.crypto import (
+    decrypt_json_payload,
+    encrypt_json_payload,
+    encrypt_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +98,6 @@ class GmailService:
         profile = service.users().getProfile(userId="me").execute()
         provider_email = profile.get("emailAddress", "")
 
-        # Serialize credentials
         creds_data = {
             "token": creds.token,
             "refresh_token": creds.refresh_token,
@@ -100,8 +106,7 @@ class GmailService:
             "client_secret": creds.client_secret,
             "scopes": list(creds.scopes) if creds.scopes else SCOPES,
         }
-        # TODO: encrypt credentials_enc in production
-        creds_json = json.dumps(creds_data)
+        creds_json = encrypt_json_payload(creds_data)
 
         # Check if an account already exists for this user + provider
         result = await db.execute(
@@ -146,7 +151,7 @@ class GmailService:
         if not account.credentials_enc:
             return None
 
-        creds_data = json.loads(account.credentials_enc)
+        creds_data = decrypt_json_payload(account.credentials_enc)
         creds = Credentials(
             token=creds_data.get("token"),
             refresh_token=creds_data.get("refresh_token"),
@@ -263,6 +268,17 @@ class GmailService:
                     with open(storage_path, "wb") as f:
                         f.write(file_data)
 
+                    bank_hint = normalize_bank_hint(filename)
+                    account_type_hint = _infer_account_type_hint_from_filename(filename)
+                    password_resolution = await resolve_pdf_password(
+                        db=db,
+                        user_id=user_id,
+                        pdf_content=file_data,
+                        bank_hint=bank_hint,
+                        account_type_hint=account_type_hint,
+                        source_filename=filename,
+                    )
+
                     # Save RawPdf record
                     raw_pdf = RawPdf(
                         user_id=user_id,
@@ -271,26 +287,32 @@ class GmailService:
                         file_hash_sha256=file_hash,
                         storage_path=storage_path,
                         file_size_bytes=len(file_data),
-                        is_password_protected=False,
+                        is_password_protected=password_resolution.encrypted,
                     )
                     db.add(raw_pdf)
                     await db.flush()
                     pdfs_saved += 1
 
-                    # Trigger statement parsing
-                    try:
-                        from app.engines.parser.base import parse_statement
-
-                        await parse_statement(
-                            db=db,
-                            user_id=user_id,
-                            pdf_id=raw_pdf.id,
-                            pdf_content=file_data,
-                        )
-                    except Exception as parse_exc:
+                    payload: dict[str, str | bool] = {
+                        "allow_semantic_duplicate": False,
+                        "bank_hint": bank_hint or "",
+                        "account_type_hint": account_type_hint or "",
+                    }
+                    if password_resolution.password:
+                        payload["password_enc"] = encrypt_text(password_resolution.password)
+                    if password_resolution.encrypted and password_resolution.password is None:
                         logger.warning(
-                            "Failed to parse email PDF %s: %s", filename, parse_exc
+                            "Encrypted Gmail PDF without resolved password pattern: %s",
+                            filename,
                         )
+
+                    await enqueue_parse_job(
+                        db=db,
+                        user_id=user_id,
+                        raw_pdf_id=raw_pdf.id,
+                        payload=payload,
+                        priority=80,
+                    )
 
             # Update last sync timestamp
             account.last_sync_at = datetime.now(timezone.utc)
@@ -320,3 +342,17 @@ class GmailService:
         account.sender_allowlist = senders
         await db.flush()
         return account
+
+
+def _infer_account_type_hint_from_filename(filename: str | None) -> str | None:
+    if not filename:
+        return None
+    lower = filename.lower().replace("_", " ").replace("-", " ")
+    if any(token in lower for token in ("credit card", "card statement", "cc statement", "cc ")):
+        return "credit_card"
+    if any(
+        token in lower
+        for token in ("account statement", "savings", "current account", "passbook")
+    ):
+        return "bank_account"
+    return None

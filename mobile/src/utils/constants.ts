@@ -1,5 +1,7 @@
 export const APP_NAME = 'HisabClub';
-export const DEFAULT_API_URL = 'http://localhost:8000/api/v1';
+export const DEFAULT_WEB_URL = 'https://hisabclub-dev-web.ankit-tech.store';
+export const DEFAULT_API_DOMAIN = 'hisabclub-dev-api.ankit-tech.store';
+export const DEFAULT_API_URL = `https://${DEFAULT_API_DOMAIN}/api/v1`;
 
 export const STORAGE_KEYS = {
   TOKEN: 'hisabclub_token',
@@ -24,4 +26,29 @@ export const COLORS = {
   credit: '#16A34A',
 };
 
-export const BANKS = ['HDFC', 'AXIS', 'SBI', 'ICICI', 'KOTAK'] as const;
+export const BANK_OPTIONS = [
+  { value: '', label: 'Auto Detect' },
+  { value: 'SBI', label: 'State Bank of India' },
+  { value: 'HDFC', label: 'HDFC Bank' },
+  { value: 'ICICI', label: 'ICICI Bank' },
+  { value: 'AXIS', label: 'Axis Bank' },
+  { value: 'KOTAK', label: 'Kotak Mahindra Bank' },
+  { value: 'PNB', label: 'Punjab National Bank' },
+  { value: 'BOB', label: 'Bank of Baroda' },
+  { value: 'CANARA', label: 'Canara Bank' },
+  { value: 'UNION', label: 'Union Bank of India' },
+  { value: 'INDIAN', label: 'Indian Bank' },
+  { value: 'BOI', label: 'Bank of India' },
+  { value: 'IDBI', label: 'IDBI Bank' },
+  { value: 'INDUSIND', label: 'IndusInd Bank' },
+  { value: 'YES', label: 'Yes Bank' },
+  { value: 'FEDERAL', label: 'Federal Bank' },
+] as const;
+
+export const BANKS = BANK_OPTIONS.map((item) => item.value).filter(Boolean) as string[];
+
+export const DOCUMENT_TYPE_OPTIONS = [
+  { value: 'auto', label: 'Auto via local LLM' },
+  { value: 'bank_account', label: 'Bank account statement' },
+  { value: 'credit_card', label: 'Credit card statement' },
+] as const;

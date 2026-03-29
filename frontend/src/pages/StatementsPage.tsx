@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { FileText, Calendar, CreditCard } from 'lucide-react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { Statement, StatementIntegrityResponse } from '../api/client';
 
 export default function StatementsPage() {
@@ -8,36 +8,40 @@ export default function StatementsPage() {
   const [integrityById, setIntegrityById] = useState<Record<string, StatementIntegrityResponse>>({});
   const [loading, setLoading] = useState(true);
   const [openingPdfId, setOpeningPdfId] = useState<string | null>(null);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchStatements = async () => {
-      try {
-        const res = await api.getStatements();
-        setStatements(res.items);
-        const creditCardStatements = res.items.filter((s) => s.account_type === 'credit_card');
-        const entries = await Promise.all(
-          creditCardStatements.map(async (s) => {
-            try {
-              const report = await api.getStatementIntegrity(s.id);
-              return [s.id, report] as const;
-            } catch {
-              return [s.id, null] as const;
-            }
-          }),
-        );
-        const map: Record<string, StatementIntegrityResponse> = {};
-        for (const [id, report] of entries) {
-          if (report) map[id] = report;
-        }
-        setIntegrityById(map);
-      } catch (err) {
-        console.error('Failed to fetch statements:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchStatements();
+    void refreshStatements();
   }, []);
+
+  const refreshStatements = async () => {
+    try {
+      const res = await api.getStatements();
+      setStatements(res.items);
+      const creditCardStatements = res.items.filter((s) => s.account_type === 'credit_card');
+      const entries = await Promise.all(
+        creditCardStatements.map(async (s) => {
+          try {
+            const report = await api.getStatementIntegrity(s.id);
+            return [s.id, report] as const;
+          } catch {
+            return [s.id, null] as const;
+          }
+        }),
+      );
+      const map: Record<string, StatementIntegrityResponse> = {};
+      for (const [id, report] of entries) {
+        if (report) map[id] = report;
+      }
+      setIntegrityById(map);
+    } catch (err) {
+      console.error('Failed to fetch statements:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return '-';
@@ -71,6 +75,55 @@ export default function StatementsPage() {
     }
   };
 
+  const handleRereview = async (statement: Statement) => {
+    try {
+      setActionError(null);
+      setReviewingId(statement.id);
+      const updated = await api.rereviewStatement(statement.id);
+      setStatements((current) => current.map((item) => (item.id === statement.id ? updated : item)));
+      if (updated.account_type === 'credit_card') {
+        try {
+          const report = await api.getStatementIntegrity(updated.id);
+          setIntegrityById((current) => ({ ...current, [updated.id]: report }));
+        } catch {
+          setIntegrityById((current) => {
+            const next = { ...current };
+            delete next[updated.id];
+            return next;
+          });
+        }
+      }
+      await refreshStatements();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Re-review failed.');
+    } finally {
+      setReviewingId(null);
+    }
+  };
+
+  const handleDelete = async (statement: Statement) => {
+    if (!window.confirm(`Delete ${statement.bank_name} statement and remove its local LLM memory?`)) {
+      return;
+    }
+    try {
+      setActionError(null);
+      setDeletingId(statement.id);
+      await api.deleteStatement(statement.id);
+      setStatements((current) => current.filter((item) => item.id !== statement.id));
+      setIntegrityById((current) => {
+        const next = { ...current };
+        delete next[statement.id];
+        return next;
+      });
+    } catch (err) {
+      const message =
+        err instanceof ApiError || err instanceof Error ? err.message : 'Delete failed.';
+      setActionError(message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="hc-page">
@@ -88,6 +141,12 @@ export default function StatementsPage() {
           <p className="hc-page-subtitle">Track parsed periods, due values, and processing health by account.</p>
         </div>
       </header>
+
+      {actionError && (
+        <div className="hc-msg hc-msg-danger" style={{ marginBottom: '1rem' }}>
+          <span>{actionError}</span>
+        </div>
+      )}
 
       {statements.length === 0 ? (
         <div className="hc-empty">
@@ -134,7 +193,7 @@ export default function StatementsPage() {
               <div className="hc-inline-actions" style={{ marginTop: '0.7rem' }}>
                 <span
                   className={`hc-badge ${
-                    stmt.parse_status === 'success'
+                    stmt.parse_status === 'parsed'
                       ? 'hc-badge-ok'
                       : stmt.parse_status === 'failed'
                       ? 'hc-badge-danger'
@@ -163,6 +222,21 @@ export default function StatementsPage() {
                   disabled={openingPdfId === stmt.id}
                 >
                   {openingPdfId === stmt.id ? 'Opening PDF...' : 'View PDF'}
+                </button>
+                <button
+                  className="hc-btn hc-btn-outline"
+                  onClick={() => handleRereview(stmt)}
+                  disabled={reviewingId === stmt.id || deletingId === stmt.id}
+                >
+                  {reviewingId === stmt.id ? 'Re-reviewing...' : 'Re-review with LLM'}
+                </button>
+                <button
+                  className="hc-btn hc-btn-ghost"
+                  onClick={() => handleDelete(stmt)}
+                  disabled={deletingId === stmt.id || reviewingId === stmt.id}
+                  style={{ color: 'var(--hc-accent)' }}
+                >
+                  {deletingId === stmt.id ? 'Deleting...' : 'Delete'}
                 </button>
               </div>
 

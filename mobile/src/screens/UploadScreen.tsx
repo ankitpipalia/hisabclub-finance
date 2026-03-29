@@ -10,24 +10,32 @@ import {
 import { Button, TextInput, Divider, ActivityIndicator } from 'react-native-paper';
 import * as DocumentPicker from 'expo-document-picker';
 import * as api from '../api/client';
-import { BANKS } from '../utils/constants';
+import { BANK_OPTIONS, DOCUMENT_TYPE_OPTIONS } from '../utils/constants';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import AnimatedOrbs from '../components/AnimatedOrbs';
 import BrandMark from '../components/BrandMark';
 import FadeInView from '../components/FadeInView';
 
-type StatementType = 'credit_card' | 'bank_account';
+type DocumentTypeHint = 'auto' | 'bank_account' | 'credit_card';
 
 interface SelectedFile {
+  id: string;
   uri: string;
   name: string;
   size: number | undefined;
+  password: string;
+  bankHint: string;
+  accountTypeHint: DocumentTypeHint;
+  forceReprocess?: boolean;
 }
 
-interface UploadResultState {
-  type: 'success' | 'error';
+interface UploadNotification {
+  id: string;
+  fileName: string;
+  status: 'reviewing' | 'success' | 'error';
   message: string;
-  canReprocess?: boolean;
+  bankName?: string | null;
+  accountType?: string | null;
 }
 
 export default function UploadScreen() {
@@ -35,13 +43,10 @@ export default function UploadScreen() {
   const styles = useMemo(() => createStyles(colors), [colors]);
   const cardAnim = useRef(new Animated.Value(0)).current;
 
-  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [bankHint, setBankHint] = useState('');
-  const [statementType, setStatementType] = useState<StatementType>('bank_account');
+  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
+  const [showPasswordFor, setShowPasswordFor] = useState<Record<string, boolean>>({});
   const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState<UploadResultState | null>(null);
+  const [notifications, setNotifications] = useState<UploadNotification[]>([]);
 
   useEffect(() => {
     Animated.timing(cardAnim, {
@@ -51,82 +56,185 @@ export default function UploadScreen() {
     }).start();
   }, [cardAnim]);
 
+  useEffect(() => {
+    let active = true;
+    const loadRecentUploads = async () => {
+      try {
+        const recent = await api.getRecentUploads(12);
+        if (!active) return;
+        setNotifications((current) => {
+          const existing = new Set(current.map((item) => item.id));
+          const fromServer = recent
+            .filter((item) => !existing.has(item.pdf_id))
+            .map((item) => ({
+              id: item.pdf_id,
+              fileName: item.file_name,
+              status: normalizeReviewStatus(item.status),
+              message: item.message,
+              bankName: item.bank_name,
+              accountType: item.account_type,
+            }));
+          return [...current, ...fromServer];
+        });
+      } catch {
+        // Keep upload screen usable even if recent review feed is unavailable.
+      }
+    };
+    void loadRecentUploads();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const reviewingCount = notifications.filter((item) => item.status === 'reviewing').length;
+
+  const updateFile = (id: string, patch: Partial<SelectedFile>) => {
+    setSelectedFiles((current) => current.map((file) => (file.id === id ? { ...file, ...patch } : file)));
+  };
+
+  const removeFile = (id: string) => {
+    setSelectedFiles((current) => current.filter((file) => file.id !== id));
+  };
+
+  const setNotification = (id: string, patch: Partial<UploadNotification>) => {
+    setNotifications((current) =>
+      current.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
+    );
+  };
+
+  const remapNotificationId = (fromId: string, toId: string, fileName: string) => {
+    if (!toId || toId === fromId) return;
+    setNotifications((current) => {
+      const source = current.find((entry) => entry.id === fromId);
+      const retained = current.filter((entry) => entry.id !== fromId && entry.id !== toId);
+      if (!source) return retained;
+      return [{ ...source, id: toId, fileName }, ...retained];
+    });
+  };
+
+  const isReviewingStatus = (status: string) =>
+    ['reviewing', 'queued', 'uploaded', 'classifying', 'extracting', 'validating'].includes(
+      status.toLowerCase(),
+    );
+
+  const beginNotification = (file: SelectedFile) => {
+    setNotifications((current) => [
+      {
+        id: file.id,
+        fileName: file.name,
+        status: 'reviewing',
+        message: 'Document is under review by the local LLM. Please wait. We will notify you once it completes.',
+      },
+      ...current.filter((entry) => entry.id !== file.id),
+    ]);
+  };
+
   const handlePickFile = async () => {
     try {
       const pickResult = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
         copyToCacheDirectory: true,
+        multiple: true,
       });
 
       if (!pickResult.canceled && pickResult.assets && pickResult.assets.length > 0) {
-        const asset = pickResult.assets[0];
-        setSelectedFile({
+        const next = pickResult.assets.map((asset) => ({
+          id: `${asset.name}-${asset.uri}-${Date.now()}-${Math.random()}`,
           uri: asset.uri,
           name: asset.name,
           size: asset.size,
-        });
-        setResult(null);
+          password: '',
+          bankHint: '',
+          accountTypeHint: 'auto' as DocumentTypeHint,
+        }));
+        setSelectedFiles((current) => [...current, ...next]);
       }
     } catch {
       Alert.alert('Error', 'Failed to pick document');
     }
   };
 
-  const getUploadError = (err: any): UploadResultState => {
+  const getUploadErrorMessage = (err: any) => {
     if (err?.status === 409) {
-      return {
-        type: 'error',
-        message: 'This statement already exists. Tap "Reprocess Existing PDF" to parse it again.',
-        canReprocess: true,
-      };
+      return 'This statement already exists. Marked for reprocess.';
     }
-
-    if (err?.status === 0) {
-      return {
-        type: 'error',
-        message: err.message || 'Could not reach backend server. Verify Server URL and backend status.',
-      };
-    }
-
     if (typeof err?.message === 'string' && err.message.trim()) {
-      return { type: 'error', message: err.message };
+      return err.message;
     }
-
-    return { type: 'error', message: 'Upload failed. Please try again.' };
+    return 'Upload failed. Please try again.';
   };
 
-  const handleUpload = async (forceReprocess: boolean = false) => {
-    if (!selectedFile) {
-      Alert.alert('Error', 'Please select a PDF file first');
+  const handleUpload = async () => {
+    if (selectedFiles.length === 0) {
+      Alert.alert('Error', 'Please select at least one PDF file first');
       return;
     }
 
     setUploading(true);
-    setResult(null);
     try {
-      // Build bank_hint with account type info
-      const hintParts: string[] = [];
-      if (bankHint) hintParts.push(bankHint);
-      hintParts.push(statementType === 'credit_card' ? 'credit_card' : 'bank_account');
-      const combinedHint = hintParts.join(':');
-
-      const response = await api.uploadPdf(
-        selectedFile.uri,
-        selectedFile.name,
-        password || undefined,
-        combinedHint,
-        forceReprocess,
-      );
-      setResult({
-        type: 'success',
-        message: response.message || `Statement uploaded successfully. Status: ${response.status}`,
-      });
-      // Reset form after successful upload
-      setSelectedFile(null);
-      setPassword('');
-      setBankHint('');
-    } catch (err: any) {
-      setResult(getUploadError(err));
+      for (const file of selectedFiles) {
+        beginNotification(file);
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const response = await api.uploadPdf(
+            file.uri,
+            file.name,
+            file.password || undefined,
+            file.bankHint || undefined,
+            file.accountTypeHint,
+            file.forceReprocess ?? false,
+          );
+          const serverId = response.document_id || response.pdf_id || file.id;
+          remapNotificationId(file.id, serverId, file.name);
+          if (response.status === 'duplicate') {
+            updateFile(file.id, { forceReprocess: true });
+            setNotification(serverId, {
+              status: 'error',
+              message: response.message || 'This statement already exists. Marked for reprocess.',
+              bankName: response.bank_name,
+              accountType: response.account_type,
+            });
+            continue;
+          }
+          if (isReviewingStatus(response.status)) {
+            setNotification(serverId, {
+              status: 'reviewing',
+              message:
+                response.message ||
+                'Document is under review by the local LLM. Please wait. We will notify you once it completes.',
+              bankName: response.bank_name,
+              accountType: response.account_type,
+            });
+            removeFile(file.id);
+            continue;
+          }
+          if (response.status !== 'success' && response.status !== 'parsed') {
+            setNotification(serverId, {
+              status: 'error',
+              message: response.message || 'Upload review failed.',
+              bankName: response.bank_name,
+              accountType: response.account_type,
+            });
+            continue;
+          }
+          setNotification(serverId, {
+            status: 'success',
+            message: response.message || `Statement uploaded successfully. Status: ${response.status}`,
+            bankName: response.bank_name,
+            accountType: response.account_type,
+          });
+          removeFile(file.id);
+        } catch (err: any) {
+          const message = getUploadErrorMessage(err);
+          if (err?.status === 409) {
+            updateFile(file.id, { forceReprocess: true });
+          }
+          setNotification(file.id, {
+            status: 'error',
+            message,
+          });
+        }
+      }
     } finally {
       setUploading(false);
     }
@@ -150,11 +258,9 @@ export default function UploadScreen() {
           <AnimatedOrbs compact />
           <BrandMark size={54} />
           <Text style={styles.kicker}>Statement Intake</Text>
-          <Text style={styles.title}>Upload Document</Text>
+          <Text style={styles.title}>Upload Documents</Text>
           <Text style={styles.subtitle}>
-            {statementType === 'credit_card'
-              ? 'Upload your monthly credit card statement PDF'
-              : 'Upload your bank account statement PDF (savings or current)'}
+            Queue multiple PDFs, mark each as auto, bank account, or credit card, and let the local LLM review them.
           </Text>
         </View>
       </FadeInView>
@@ -176,162 +282,186 @@ export default function UploadScreen() {
             },
           ]}
         >
-        <Divider style={styles.divider} />
-
-        {/* Statement Type Picker */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Statement Type</Text>
-          <View style={styles.typeRow}>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Select Files</Text>
             <Button
-              mode={statementType === 'credit_card' ? 'contained' : 'outlined'}
-              onPress={() => setStatementType('credit_card')}
-              icon="credit-card"
-              style={styles.typeButton}
-              buttonColor={statementType === 'credit_card' ? colors.primary : undefined}
-              textColor={statementType === 'credit_card' ? '#FFFFFF' : colors.text}
+              mode="outlined"
+              onPress={handlePickFile}
+              icon="file-pdf-box"
+              style={styles.pickButton}
+              textColor={colors.primary}
             >
-              Credit Card
-            </Button>
-            <Button
-              mode={statementType === 'bank_account' ? 'contained' : 'outlined'}
-              onPress={() => setStatementType('bank_account')}
-              icon="bank"
-              style={styles.typeButton}
-              buttonColor={statementType === 'bank_account' ? colors.primary : undefined}
-              textColor={statementType === 'bank_account' ? '#FFFFFF' : colors.text}
-            >
-              Bank Account
+              {selectedFiles.length > 0 ? 'Add More PDFs' : 'Pick PDF Files'}
             </Button>
           </View>
-        </View>
 
-        <Divider style={styles.divider} />
+          {selectedFiles.length > 0 && (
+            <>
+              <Divider style={styles.divider} />
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Upload Queue</Text>
+                {selectedFiles.map((file, index) => (
+                  <View key={file.id} style={styles.fileCard}>
+                    <View style={styles.fileHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.fileName} numberOfLines={1}>
+                          {file.name}
+                        </Text>
+                        <Text style={styles.fileSize}>
+                          File {index + 1} · {formatFileSize(file.size)}
+                        </Text>
+                      </View>
+                      <Button compact mode="text" onPress={() => removeFile(file.id)} textColor={colors.danger}>
+                        Remove
+                      </Button>
+                    </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Select File</Text>
+                    <Text style={styles.fieldLabel}>Statement Type</Text>
+                    <View style={styles.optionRow}>
+                      {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                        <Button
+                          key={option.value}
+                          mode={file.accountTypeHint === option.value ? 'contained' : 'outlined'}
+                          onPress={() => updateFile(file.id, { accountTypeHint: option.value as DocumentTypeHint })}
+                          compact
+                          style={styles.typeChip}
+                          buttonColor={file.accountTypeHint === option.value ? colors.primary : undefined}
+                          textColor={file.accountTypeHint === option.value ? '#FFFFFF' : colors.text}
+                        >
+                          {option.label}
+                        </Button>
+                      ))}
+                    </View>
+
+                    <Text style={styles.fieldLabel}>Bank</Text>
+                    <View style={styles.optionRow}>
+                      {BANK_OPTIONS.map((option) => (
+                        <Button
+                          key={option.value || 'auto'}
+                          mode={file.bankHint === option.value ? 'contained' : 'outlined'}
+                          onPress={() => updateFile(file.id, { bankHint: option.value })}
+                          compact
+                          style={styles.bankChip}
+                          buttonColor={file.bankHint === option.value ? colors.primary : undefined}
+                          textColor={file.bankHint === option.value ? '#FFFFFF' : colors.text}
+                        >
+                          {option.label}
+                        </Button>
+                      ))}
+                    </View>
+
+                    <TextInput
+                      label="PDF Password (if encrypted)"
+                      value={file.password}
+                      onChangeText={(value) => updateFile(file.id, { password: value })}
+                      mode="outlined"
+                      secureTextEntry={!showPasswordFor[file.id]}
+                      autoComplete="off"
+                      textContentType="none"
+                      importantForAutofill="no"
+                      autoCorrect={false}
+                      spellCheck={false}
+                      right={(
+                        <TextInput.Icon
+                          icon={showPasswordFor[file.id] ? 'eye-off' : 'eye'}
+                          onPress={() =>
+                            setShowPasswordFor((current) => ({ ...current, [file.id]: !current[file.id] }))
+                          }
+                        />
+                      )}
+                      style={styles.input}
+                      outlineColor={colors.border}
+                      activeOutlineColor={colors.primary}
+                    />
+                    <Text style={styles.passwordHint}>
+                      Auto mode lets the local LLM decide whether this PDF is a bank account statement or a credit card statement.
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+
+          <Divider style={styles.divider} />
+
           <Button
-            mode="outlined"
-            onPress={handlePickFile}
-            icon="file-pdf-box"
-            style={styles.pickButton}
-            textColor={colors.primary}
+            mode="contained"
+            onPress={handleUpload}
+            loading={uploading}
+            disabled={uploading || selectedFiles.length === 0}
+            icon="upload"
+            style={styles.uploadButton}
+            buttonColor={colors.primary}
           >
-            {selectedFile ? 'Change File' : 'Pick PDF File'}
+            Upload Queue
           </Button>
 
-          {selectedFile && (
-            <View style={styles.fileInfo}>
-              <Text style={styles.fileName} numberOfLines={1}>
-                {selectedFile.name}
-              </Text>
-              <Text style={styles.fileSize}>
-                {formatFileSize(selectedFile.size)}
+          {uploading && (
+            <View style={styles.progressSection}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={styles.progressText}>
+                {reviewingCount > 0
+                  ? `${reviewingCount} document${reviewingCount > 1 ? 's' : ''} under local LLM review`
+                  : 'Reviewing documents locally...'}
               </Text>
             </View>
           )}
-        </View>
-
-        <Divider style={styles.divider} />
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Options</Text>
-
-          <TextInput
-            label="PDF Password (if encrypted)"
-            value={password}
-            onChangeText={setPassword}
-            mode="outlined"
-            secureTextEntry={!showPassword}
-            autoComplete="off"
-            textContentType="none"
-            importantForAutofill="noExcludeDescendants"
-            autoCorrect={false}
-            spellCheck={false}
-            right={(
-              <TextInput.Icon
-                icon={showPassword ? 'eye-off' : 'eye'}
-                onPress={() => setShowPassword((prev) => !prev)}
-              />
-            )}
-            style={styles.input}
-            outlineColor={colors.border}
-            activeOutlineColor={colors.primary}
-          />
-          <Text style={styles.passwordHint}>
-            For statements, this is a document password, not your account password.
-          </Text>
-
-          <Text style={styles.fieldLabel}>Bank Hint (optional)</Text>
-          <View style={styles.bankRow}>
-            {BANKS.map((bank) => (
-              <Button
-                key={bank}
-                mode={bankHint === bank ? 'contained' : 'outlined'}
-                onPress={() => setBankHint(bankHint === bank ? '' : bank)}
-                compact
-                style={styles.bankChip}
-                buttonColor={bankHint === bank ? colors.primary : undefined}
-                textColor={bankHint === bank ? '#FFFFFF' : colors.text}
-              >
-                {bank}
-              </Button>
-            ))}
-          </View>
-        </View>
-
-        <Divider style={styles.divider} />
-
-        <Button
-          mode="contained"
-          onPress={() => handleUpload()}
-          loading={uploading}
-          disabled={uploading || !selectedFile}
-          icon="upload"
-          style={styles.uploadButton}
-          buttonColor={colors.primary}
-        >
-          Upload Statement
-        </Button>
-
-        {uploading && (
-          <View style={styles.progressSection}>
-            <ActivityIndicator size="small" color={colors.primary} />
-            <Text style={styles.progressText}>Uploading and processing...</Text>
-          </View>
-        )}
-
-        {result && (
-          <View
-            style={[
-              styles.resultBanner,
-              result.type === 'success' ? styles.resultSuccess : styles.resultError,
-            ]}
-          >
-            <Text
-              style={[
-                styles.resultText,
-                { color: result.type === 'success' ? colors.success : colors.danger },
-              ]}
-            >
-              {result.message}
-            </Text>
-            {result.type === 'error' && result.canReprocess && selectedFile && (
-              <Button
-                mode="outlined"
-                onPress={() => handleUpload(true)}
-                disabled={uploading}
-                style={styles.reprocessButton}
-                textColor={colors.danger}
-              >
-                Reprocess Existing PDF
-              </Button>
-            )}
-          </View>
-        )}
         </Animated.View>
+      </FadeInView>
+
+      <FadeInView delay={130}>
+        <View style={styles.notificationPanel}>
+          <Text style={styles.sectionTitle}>Review Notifications</Text>
+          {notifications.length === 0 ? (
+            <Text style={styles.emptyNotification}>
+              Upload notifications will appear here while the local LLM reviews each document.
+            </Text>
+          ) : (
+            notifications.map((item) => (
+              <View
+                key={item.id}
+                style={[
+                  styles.notificationCard,
+                  item.status === 'success'
+                    ? styles.resultSuccess
+                    : item.status === 'error'
+                      ? styles.resultError
+                      : styles.resultReviewing,
+                ]}
+              >
+                <Text style={styles.notificationFile}>{item.fileName}</Text>
+                <Text style={styles.notificationMessage}>{item.message}</Text>
+                {(item.bankName || item.accountType) ? (
+                  <Text style={styles.notificationMeta}>
+                    {(item.bankName || 'Auto-detected')} · {item.accountType || 'type pending'}
+                  </Text>
+                ) : null}
+              </View>
+            ))
+          )}
+        </View>
       </FadeInView>
     </ScrollView>
   );
+}
+
+function normalizeReviewStatus(status: string): UploadNotification['status'] {
+  if (
+    status === 'reviewing' ||
+    status === 'queued' ||
+    status === 'pending' ||
+    status === 'parsing' ||
+    status === 'uploaded' ||
+    status === 'classifying' ||
+    status === 'extracting' ||
+    status === 'validating'
+  ) {
+    return 'reviewing';
+  }
+  if (status === 'success' || status === 'parsed') {
+    return 'success';
+  }
+  return 'error';
 }
 
 const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
@@ -399,28 +529,26 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1.1,
   },
-  typeRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  typeButton: {
-    flex: 1,
-  },
   pickButton: {
     borderColor: COLORS.primary,
     alignSelf: 'flex-start',
   },
-  fileInfo: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 12,
-    borderWidth: StyleSheet.hairlineWidth,
+  fileCard: {
+    borderWidth: 1,
     borderColor: COLORS.border,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: COLORS.background,
+  },
+  fileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
   },
   fileName: {
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '600',
     color: COLORS.text,
   },
   fileSize: {
@@ -428,30 +556,34 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     color: COLORS.textSecondary,
     marginTop: 2,
   },
-  input: {
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    marginBottom: 8,
+    marginTop: 8,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
     marginBottom: 4,
+  },
+  typeChip: {
+    marginBottom: 4,
+  },
+  bankChip: {
+    marginBottom: 4,
+  },
+  input: {
+    marginTop: 8,
     backgroundColor: COLORS.surface,
   },
   passwordHint: {
     fontSize: 12,
     color: COLORS.textSecondary,
-    fontStyle: 'normal',
-    marginBottom: 12,
+    marginTop: 6,
     lineHeight: 17,
-  },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: COLORS.textSecondary,
-    marginBottom: 8,
-  },
-  bankRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  bankChip: {
-    marginBottom: 4,
   },
   uploadButton: {
     paddingVertical: 4,
@@ -467,27 +599,47 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     fontSize: 14,
     color: COLORS.textSecondary,
   },
-  resultBanner: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 8,
+  notificationPanel: {
+    marginTop: 14,
     borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    padding: 14,
+  },
+  emptyNotification: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+  },
+  notificationCard: {
+    marginBottom: 10,
+    borderWidth: 1,
+    padding: 12,
+  },
+  notificationFile: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  notificationMessage: {
+    fontSize: 13,
+    color: COLORS.text,
+    marginTop: 4,
+  },
+  notificationMeta: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+  },
+  resultReviewing: {
+    borderColor: COLORS.primary,
+    backgroundColor: 'rgba(37, 99, 235, 0.10)',
   },
   resultSuccess: {
-    backgroundColor: 'rgba(22, 163, 74, 0.12)',
     borderColor: COLORS.success,
+    backgroundColor: 'rgba(22, 163, 74, 0.12)',
   },
   resultError: {
+    borderColor: COLORS.danger,
     backgroundColor: 'rgba(220, 38, 38, 0.12)',
-    borderColor: COLORS.danger,
-  },
-  resultText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  reprocessButton: {
-    marginTop: 12,
-    borderColor: COLORS.danger,
-    alignSelf: 'flex-start',
   },
 });

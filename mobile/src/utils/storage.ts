@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
-import { STORAGE_KEYS } from './constants';
+import { DEFAULT_API_URL, STORAGE_KEYS } from './constants';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
 
@@ -20,11 +20,19 @@ export async function clearToken(): Promise<void> {
 
 // Regular storage for settings
 export async function getServerUrl(): Promise<string | null> {
-  return AsyncStorage.getItem(STORAGE_KEYS.SERVER_URL);
+  const stored = await AsyncStorage.getItem(STORAGE_KEYS.SERVER_URL);
+  if (!stored || !stored.trim()) {
+    return DEFAULT_API_URL;
+  }
+  return normalizeServerUrl(stored);
 }
 
 export async function setServerUrl(url: string): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEYS.SERVER_URL, url);
+  await AsyncStorage.setItem(STORAGE_KEYS.SERVER_URL, normalizeServerUrl(url));
+}
+
+export async function resetServerUrl(): Promise<void> {
+  await AsyncStorage.removeItem(STORAGE_KEYS.SERVER_URL);
 }
 
 export async function getLastSmsSync(): Promise<number | null> {
@@ -46,4 +54,39 @@ export async function getThemeMode(): Promise<ThemeMode> {
 
 export async function setThemeMode(mode: ThemeMode): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEYS.THEME_MODE, mode);
+}
+
+export function normalizeServerUrl(url: string): string {
+  let value = url.trim();
+  if (!value) return DEFAULT_API_URL;
+
+  if (!/^https?:\/\//i.test(value)) {
+    value = `https://${value}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return DEFAULT_API_URL;
+  }
+
+  parsed.hash = '';
+  parsed.search = '';
+
+  const normalizedPath = parsed.pathname.replace(/\/+$/, '');
+  if (!normalizedPath || normalizedPath === '/') {
+    parsed.pathname = '/api/v1';
+  } else if (!normalizedPath.endsWith('/api/v1')) {
+    parsed.pathname = `${normalizedPath}/api/v1`;
+  } else {
+    parsed.pathname = normalizedPath;
+  }
+
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+export function isDefaultServerUrl(url: string | null | undefined): boolean {
+  if (!url) return true;
+  return normalizeServerUrl(url) === DEFAULT_API_URL;
 }

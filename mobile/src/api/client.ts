@@ -111,6 +111,34 @@ export async function login(email: string, password: string) {
   return result;
 }
 
+export async function requestPasswordReset(email: string) {
+  return request<{
+    message: string;
+    delivery: string;
+    preview_url: string | null;
+  }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function resetPassword(token: string, newPassword: string) {
+  return request<{ message: string }>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
+}
+
+export async function changePassword(currentPassword: string, newPassword: string) {
+  return request<{ message: string }>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  });
+}
+
 export async function getMe() {
   return request<{ id: string; email: string; display_name: string }>('/auth/me');
 }
@@ -121,6 +149,7 @@ export async function uploadPdf(
   fileName: string,
   password?: string,
   bankHint?: string,
+  accountTypeHint?: string,
   forceReprocess: boolean = false,
 ) {
   const formData = new FormData();
@@ -131,12 +160,37 @@ export async function uploadPdf(
   } as any);
   if (password) formData.append('password', password);
   if (bankHint) formData.append('bank_hint', bankHint);
+  if (accountTypeHint && accountTypeHint !== 'auto') {
+    formData.append('account_type_hint', accountTypeHint);
+  }
   if (forceReprocess) formData.append('force_reprocess', 'true');
 
-  return request<{ pdf_id: string; status: string; message: string }>(
+  return request<{
+    pdf_id: string;
+    document_id?: string | null;
+    status: string;
+    message: string;
+    bank_name?: string | null;
+    account_type?: string | null;
+    parser_used?: string | null;
+  }>(
     '/upload/pdf',
     { method: 'POST', body: formData },
   );
+}
+
+export async function getRecentUploads(limit: number = 20) {
+  return request<Array<{
+    pdf_id: string;
+    file_name: string;
+    status: string;
+    message: string;
+    bank_name?: string | null;
+    account_type?: string | null;
+    parser_used?: string | null;
+    transaction_count?: number | null;
+    created_at?: string | null;
+  }>>(`/upload/recent?limit=${limit}`);
 }
 
 // Statements
@@ -145,6 +199,18 @@ export async function getStatements(params?: { bank?: string }) {
   if (params?.bank) query.set('bank', params.bank);
   const qs = query.toString();
   return request<{ items: Statement[]; total: number }>(`/statements${qs ? `?${qs}` : ''}`);
+}
+
+export async function rereviewStatement(statementId: string) {
+  return request<Statement>(`/statements/${statementId}/re-review`, {
+    method: 'POST',
+  });
+}
+
+export async function deleteStatement(statementId: string) {
+  return request<{ message: string }>(`/statements/${statementId}`, {
+    method: 'DELETE',
+  });
 }
 
 // Transactions

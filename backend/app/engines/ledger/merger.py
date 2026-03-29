@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.ledger.category_enrichment import infer_uncategorized_category
 from app.engines.ledger.dedup import DedupEngine, merge_source
+from app.engines.ledger.fingerprint import build_transaction_dedupe_fingerprint
 from app.engines.ledger.merchant_normalizer import normalize_and_categorize
 from app.engines.ledger.nature import infer_transaction_nature
 from app.models.canonical_transaction import CanonicalTransaction
@@ -89,6 +90,14 @@ async def promote_to_canonical(
         account_masked=account_masked,
         bank_name=bank_name,
         account_type=account_type,
+        dedupe_fingerprint=parsed_txn.dedupe_fingerprint
+        or build_transaction_dedupe_fingerprint(
+            user_id=user_id,
+            account_masked=account_masked,
+            transaction_date=parsed_txn.transaction_date,
+            amount=float(parsed_txn.amount),
+            description=parsed_txn.description_raw,
+        ),
         foreign_amount=parsed_txn.foreign_amount,
         foreign_currency=parsed_txn.foreign_currency,
     )

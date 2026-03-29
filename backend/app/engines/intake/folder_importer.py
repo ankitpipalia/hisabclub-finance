@@ -9,13 +9,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.engines.intake.doc_classifier import classify_document
 from app.engines.ledger.transfer_reclassifier import reclassify_transfer_payments_for_user
-from app.engines.parser.base import parse_statement
+from app.engines.llm.knowledge import ingest_pdf_knowledge
+from app.engines.parser.base import StatementDuplicateError, parse_statement
+from app.models.document_knowledge_chunk import DocumentKnowledgeChunk
 from app.models.document_artifact import DocumentArtifact
 from app.models.raw_pdf import RawPdf
 
@@ -131,6 +133,26 @@ async def import_folder(
             )
         )
         if not should_parse_pdf:
+            if path.suffix.lower() == ".pdf":
+                try:
+                    with open(path, "rb") as f:
+                        non_statement_content = f.read()
+                    await ingest_pdf_knowledge(
+                        db=db,
+                        user_id=user_id,
+                        pdf_content=non_statement_content,
+                        password=_password_for_path(str(path), password_map),
+                        source_filename=path.name,
+                        source_kind="artifact",
+                        artifact_id=artifact.id,
+                        bank_hint=classified.bank_hint,
+                        account_type_hint=(
+                            "credit_card" if classified.doc_type == "credit_card_statement" else None
+                        ),
+                        doc_type=classified.doc_type,
+                    )
+                except Exception:
+                    pass
             artifact.status = "skipped"
             artifact.parse_message = "Registered for non-statement workflow"
             artifact.processed_at = datetime.now(timezone.utc)
@@ -179,14 +201,51 @@ async def import_folder(
             await db.flush()
 
             password = _password_for_path(str(path), password_map)
-            statement = await parse_statement(
-                db=db,
-                user_id=user_id,
-                pdf_id=pdf_id,
-                pdf_content=content,
-                password=password,
-                bank_hint=classified.bank_hint,
-            )
+            try:
+                await ingest_pdf_knowledge(
+                    db=db,
+                    user_id=user_id,
+                    pdf_content=content,
+                    password=password,
+                    source_filename=path.name,
+                    source_kind="raw_pdf",
+                    raw_pdf_id=pdf_id,
+                    bank_hint=classified.bank_hint,
+                    account_type_hint=(
+                        "credit_card" if classified.doc_type == "credit_card_statement" else None
+                    ),
+                    doc_type=classified.doc_type,
+                )
+            except Exception:
+                pass
+            try:
+                statement = await parse_statement(
+                    db=db,
+                    user_id=user_id,
+                    pdf_id=pdf_id,
+                    pdf_content=content,
+                    password=password,
+                    bank_hint=classified.bank_hint,
+                    allow_semantic_duplicate=force_reprocess,
+                )
+            except StatementDuplicateError as dup_exc:
+                await db.execute(
+                    delete(DocumentKnowledgeChunk).where(
+                        DocumentKnowledgeChunk.user_id == user_id,
+                        DocumentKnowledgeChunk.raw_pdf_id == pdf_id,
+                    )
+                )
+                await db.execute(delete(RawPdf).where(RawPdf.id == pdf_id, RawPdf.user_id == user_id))
+                try:
+                    if os.path.exists(storage_path):
+                        os.remove(storage_path)
+                except OSError:
+                    pass
+                artifact.status = "skipped"
+                artifact.parse_message = str(dup_exc)
+                artifact.processed_at = datetime.now(timezone.utc)
+                result.skipped += 1
+                continue
             tx_count = statement.transaction_count or 0
             if tx_count > 0:
                 if classified.doc_type == "unknown_pdf":

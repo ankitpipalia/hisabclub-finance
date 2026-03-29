@@ -54,6 +54,7 @@ class CanonicalTransaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     account_masked: Mapped[str | None] = mapped_column(String(50))
     bank_name: Mapped[str | None] = mapped_column(String(50))
     account_type: Mapped[str | None] = mapped_column(String(50))
+    dedupe_fingerprint: Mapped[str | None] = mapped_column(String(64))
 
     # Foreign exchange
     foreign_amount: Mapped[float | None] = mapped_column(Numeric(12, 2))
@@ -73,3 +74,13 @@ class CanonicalTransaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     merchant = relationship("Merchant")
     category = relationship("Category")
     sources = relationship("TransactionSource", back_populates="canonical_transaction")
+    transfer_matches_as_debit = relationship(
+        "TransferMatch",
+        foreign_keys="TransferMatch.debit_canonical_id",
+        back_populates="debit_transaction",
+    )
+    transfer_matches_as_credit = relationship(
+        "TransferMatch",
+        foreign_keys="TransferMatch.credit_canonical_id",
+        back_populates="credit_transaction",
+    )

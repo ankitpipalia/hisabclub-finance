@@ -15,6 +15,7 @@ from app.engines.ledger.nature import infer_transaction_nature
 from app.engines.llm.client import LLMClient
 from app.engines.llm.transfer_classifier import llm_is_credit_card_payment
 from app.models.canonical_transaction import CanonicalTransaction
+from app.models.transfer_match import TransferMatch
 
 _TRANSFERISH_HINTS = (
     "TRANSFER",
@@ -140,6 +141,14 @@ async def reclassify_transfer_payments_for_user(
             continue
 
         matched_credit_card_pairs += 1
+        await _upsert_transfer_match(
+            db=db,
+            user_id=user_id,
+            debit_txn=debit_txn,
+            credit_txn=credit_txn,
+            confidence=float(pair.get("confidence") or 0.8),
+            match_type="cc_bill_payment_pair",
+        )
         for txn in (debit_txn, credit_txn):
             if txn.transaction_nature != "transfer_internal":
                 txn.transaction_nature = "transfer_internal"
@@ -196,4 +205,44 @@ async def reclassify_transfer_payments_for_user(
         matched_credit_card_pairs=matched_credit_card_pairs,
         llm_checked=llm_checked,
         llm_promoted=llm_promoted,
+    )
+
+
+async def _upsert_transfer_match(
+    *,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    debit_txn: CanonicalTransaction,
+    credit_txn: CanonicalTransaction,
+    confidence: float,
+    match_type: str,
+) -> None:
+    existing = (
+        await db.execute(
+            select(TransferMatch)
+            .where(
+                TransferMatch.user_id == user_id,
+                TransferMatch.debit_canonical_id == debit_txn.id,
+                TransferMatch.credit_canonical_id == credit_txn.id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    clamped_confidence = max(0.0, min(1.0, confidence))
+    if existing is not None:
+        existing.confidence = clamped_confidence
+        existing.match_type = match_type
+        if existing.resolution_status not in {"accepted", "rejected"}:
+            existing.resolution_status = "auto"
+        return
+
+    db.add(
+        TransferMatch(
+            user_id=user_id,
+            debit_canonical_id=debit_txn.id,
+            credit_canonical_id=credit_txn.id,
+            match_type=match_type,
+            confidence=clamped_confidence,
+            resolution_status="auto",
+        )
     )

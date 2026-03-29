@@ -7,8 +7,13 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
 from app.engines.insights.statement_integrity import build_credit_card_statement_integrity
+from app.engines.parser.statement_lifecycle import (
+    delete_statement_and_memory,
+    rereview_statement_with_llm,
+)
 from app.models.raw_pdf import RawPdf
 from app.models.statement import Statement
+from app.schemas.auth import MessageResponse
 from app.schemas.statement import (
     StatementIntegrityResponse,
     StatementListResponse,
@@ -81,7 +86,7 @@ async def list_statements(
         )
         .outerjoin(RawPdf, Statement.pdf_id == RawPdf.id)
         .outerjoin(reprocess_counts, reprocess_counts.c.file_hash == RawPdf.file_hash_sha256)
-        .where(Statement.user_id == user.id)
+        .where(Statement.user_id == user.id, Statement.is_active == True)  # noqa: E712
     )
 
     if bank:
@@ -206,6 +211,87 @@ async def get_statement_integrity(statement_id: str, user: CurrentUser, db: DbSe
         statement=statement,
     )
     return StatementIntegrityResponse(**report)
+
+
+@router.post("/{statement_id}/re-review", response_model=StatementResponse)
+async def rereview_statement(statement_id: str, user: CurrentUser, db: DbSession):
+    row = (
+        await db.execute(
+            select(
+                Statement,
+                RawPdf.id.label("pdf_id"),
+                RawPdf.original_filename.label("pdf_filename"),
+                RawPdf.source_type.label("source_type"),
+            )
+            .outerjoin(RawPdf, Statement.pdf_id == RawPdf.id)
+            .where(Statement.id == statement_id, Statement.user_id == user.id)
+            .limit(1)
+        )
+    ).one_or_none()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    statement, _pdf_id, _pdf_filename, _source_type = row
+
+    try:
+        reparsed = await rereview_statement_with_llm(
+            db=db,
+            user_id=user.id,
+            statement=statement,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    raw_pdf = (
+        await db.execute(
+            select(RawPdf).where(RawPdf.id == reparsed.pdf_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    reprocess_count = 1
+    if raw_pdf is not None:
+        reprocess_count = (
+            await db.execute(
+                select(func.count(Statement.id))
+                .join(RawPdf, Statement.pdf_id == RawPdf.id)
+                .where(
+                    Statement.user_id == user.id,
+                    RawPdf.file_hash_sha256 == raw_pdf.file_hash_sha256,
+                )
+            )
+        ).scalar() or 1
+
+    return _to_statement_response(
+        reparsed,
+        str(raw_pdf.id) if raw_pdf else None,
+        raw_pdf.original_filename if raw_pdf else None,
+        raw_pdf.source_type if raw_pdf else None,
+        reprocess_count,
+    )
+
+
+@router.delete("/{statement_id}", response_model=MessageResponse)
+async def delete_statement(statement_id: str, user: CurrentUser, db: DbSession):
+    statement = (
+        await db.execute(
+            select(Statement).where(Statement.id == statement_id, Statement.user_id == user.id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if statement is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    result = await delete_statement_and_memory(
+        db=db,
+        user_id=user.id,
+        statement=statement,
+        remove_pdf=True,
+    )
+    return MessageResponse(
+        message=(
+            "Statement deleted. "
+            f"Removed {result.deleted_parsed_transactions} parsed transactions, "
+            f"{result.deleted_canonical_transactions} canonical transactions, "
+            "and the local LLM memory for this PDF."
+        )
+    )
 
 
 def _resolve_storage_path(storage_path: str | None) -> str | None:

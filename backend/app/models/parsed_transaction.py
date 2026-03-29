@@ -37,6 +37,7 @@ class ParsedTransaction(UUIDPrimaryKeyMixin, Base):
 
     reference_number: Mapped[str | None] = mapped_column(String(100))
     upi_id: Mapped[str | None] = mapped_column(String(255))
+    dedupe_fingerprint: Mapped[str | None] = mapped_column(String(64))
 
     confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     extraction_method: Mapped[str] = mapped_column(

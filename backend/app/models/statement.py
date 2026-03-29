@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -38,9 +38,15 @@ class Statement(UUIDPrimaryKeyMixin, Base):
 
     parser_used: Mapped[str] = mapped_column(String(100), nullable=False)
     parse_status: Mapped[str] = mapped_column(
-        String(20), default="pending", nullable=False
-    )  # pending | parsing | success | partial | failed
+        String(20), default="uploaded", nullable=False
+    )  # uploaded | classifying | extracting | validating | review_required | parsed | partial | failed
     parse_errors: Mapped[dict | None] = mapped_column(JSONB)
+    statement_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    version_no: Mapped[int] = mapped_column(default=1, nullable=False)
+    supersedes_statement_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("statements.id")
+    )
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     transaction_count: Mapped[int | None] = mapped_column()
 

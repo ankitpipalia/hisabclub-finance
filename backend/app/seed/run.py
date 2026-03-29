@@ -8,9 +8,11 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import async_session_factory
 from app.models.category import Category
 from app.models.merchant import Merchant, MerchantPattern
+from app.security.tenant_context import apply_rls_db_role
 from app.seed.categories import DEFAULT_CATEGORIES
 from app.seed.merchants import MERCHANTS
 
@@ -107,6 +109,8 @@ async def seed_merchants(db: AsyncSession, category_map: dict[str, uuid.UUID]) -
 async def run_seed():
     print("=== HisabClub Seed Runner ===\n")
     async with async_session_factory() as db:
+        if settings.db_set_role_on_connect:
+            await apply_rls_db_role(db, role_name=settings.db_rls_role)
         category_map = await seed_categories(db)
         await seed_merchants(db, category_map)
     print("\nSeed complete!")

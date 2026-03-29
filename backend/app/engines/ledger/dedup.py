@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.engines.ledger.fingerprint import build_transaction_dedupe_fingerprint
 from app.models.canonical_transaction import CanonicalTransaction
 from app.models.parsed_transaction import ParsedTransaction
 from app.models.transaction_source import TransactionSource
@@ -35,6 +36,18 @@ class DedupEngine:
 
         Returns (matching_canonical_txn, confidence, match_method) or (None, 0.0, "").
         """
+        # Tier 0: Deterministic fingerprint (authoritative fast path)
+        fingerprint = parsed_txn.dedupe_fingerprint or build_transaction_dedupe_fingerprint(
+            user_id=user_id,
+            account_masked=None,
+            transaction_date=parsed_txn.transaction_date,
+            amount=float(parsed_txn.amount),
+            description=parsed_txn.description_raw,
+        )
+        exact = await self._match_by_fingerprint(db, user_id, fingerprint)
+        if exact is not None:
+            return exact, 0.99, "fingerprint_exact"
+
         # Tier 1: Exact reference match
         if parsed_txn.reference_number:
             match = await self._match_by_reference(db, user_id, parsed_txn)
@@ -52,6 +65,22 @@ class DedupEngine:
             return match, confidence, "fuzzy"
 
         return None, 0.0, ""
+
+    async def _match_by_fingerprint(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        fingerprint: str,
+    ) -> CanonicalTransaction | None:
+        result = await db.execute(
+            select(CanonicalTransaction)
+            .where(
+                CanonicalTransaction.user_id == user_id,
+                CanonicalTransaction.dedupe_fingerprint == fingerprint,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def _match_by_reference(
         self,

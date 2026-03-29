@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,14 +12,50 @@ from fastapi.staticfiles import StaticFiles
 from app.api.v1.router import api_router
 from app.config import settings
 
-# Path to built frontend
-FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+def _resolve_frontend_dir() -> Path | None:
+    configured = os.getenv("FRONTEND_DIST_DIR")
+    candidates = []
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.extend(
+        [
+            Path(__file__).resolve().parents[2] / "frontend" / "dist",
+            Path("/app/frontend/dist"),
+            Path("/frontend/dist"),
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+FRONTEND_DIR = _resolve_frontend_dir()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(settings.upload_dir, exist_ok=True)
-    yield
+    worker_task: asyncio.Task | None = None
+    if settings.job_runner_enabled:
+        from app.engines.jobs.runner import run_worker_loop
+
+        worker_id = f"embedded-worker-{os.getpid()}"
+        worker_task = asyncio.create_task(
+            run_worker_loop(
+                worker_id=worker_id,
+                poll_seconds=max(0.2, settings.job_runner_poll_seconds),
+                enable_dlq_retry=settings.job_runner_dlq_retry_enabled,
+            )
+        )
+    try:
+        yield
+    finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
 
 
 app = FastAPI(
@@ -30,7 +68,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
+        "https://hisabclub-dev-web.ankit-tech.store",
+        "https://hisabclub-dev-api.ankit-tech.store",
+        "http://192.168.1.69:5276",
+        "http://localhost:5276",
         "http://localhost:3000",
     ],
     allow_credentials=True,
@@ -47,7 +88,7 @@ async def health_check():
 
 
 # Serve frontend static files
-if FRONTEND_DIR.exists():
+if FRONTEND_DIR:
     # Mount static assets (JS, CSS, images)
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="static-assets")
 

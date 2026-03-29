@@ -8,12 +8,13 @@ import {
   Platform,
   ScrollView,
   Alert,
+  Linking,
 } from 'react-native';
-import { TextInput, Button } from 'react-native-paper';
+import { TextInput, Button, IconButton, Menu } from 'react-native-paper';
 import { useAuth } from '../auth/AuthContext';
 import * as api from '../api/client';
-import { getServerUrl, setServerUrl } from '../utils/storage';
-import { APP_NAME } from '../utils/constants';
+import { getServerUrl, isDefaultServerUrl, normalizeServerUrl, resetServerUrl, setServerUrl } from '../utils/storage';
+import { APP_NAME, DEFAULT_API_DOMAIN, DEFAULT_API_URL } from '../utils/constants';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import AnimatedOrbs from '../components/AnimatedOrbs';
 import BrandMark from '../components/BrandMark';
@@ -30,14 +31,20 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [isSetupMode, setIsSetupMode] = useState(false);
+  const [isForgotMode, setIsForgotMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'ok' | 'fail'>('idle');
+  const [serverMenuVisible, setServerMenuVisible] = useState(false);
+  const [showCustomServer, setShowCustomServer] = useState(false);
+  const [resetMessage, setResetMessage] = useState('');
+  const [resetPreviewUrl, setResetPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
     getServerUrl().then((url) => {
-      // Pre-populate with stored URL or the default
-      setServerUrlLocal(url || 'http://localhost:8000/api/v1');
+      const resolved = url || DEFAULT_API_URL;
+      setServerUrlLocal(resolved);
+      setShowCustomServer(!isDefaultServerUrl(resolved));
     });
   }, []);
 
@@ -50,21 +57,29 @@ export default function LoginScreen() {
   }, [fadeAnim]);
 
   const handleSaveUrl = async () => {
-    const trimmed = serverUrl.trim();
+    if (!showCustomServer) {
+      await resetServerUrl();
+      setServerUrlLocal(DEFAULT_API_URL);
+      return;
+    }
+
+    const trimmed = normalizeServerUrl(serverUrl);
     if (!trimmed) {
       Alert.alert('Error', 'Please enter a server URL');
       return;
     }
     await setServerUrl(trimmed);
+    setServerUrlLocal(trimmed);
   };
 
   const handleTestConnection = async () => {
-    const trimmed = serverUrl.trim();
+    const trimmed = showCustomServer ? normalizeServerUrl(serverUrl) : DEFAULT_API_URL;
     if (!trimmed) {
       Alert.alert('Error', 'Please enter a server URL first');
       return;
     }
     await setServerUrl(trimmed);
+    setServerUrlLocal(trimmed);
     setTestingConnection(true);
     setConnectionStatus('idle');
     try {
@@ -82,23 +97,35 @@ export default function LoginScreen() {
   };
 
   const handleSubmit = async () => {
-    if (!email.trim() || !password.trim()) {
+    if (!email.trim()) {
+      Alert.alert('Error', 'Email is required');
+      return;
+    }
+    if (!isForgotMode && !password.trim()) {
       Alert.alert('Error', 'Email and password are required');
       return;
     }
-    if (isSetupMode && !displayName.trim()) {
+    if (isSetupMode && !isForgotMode && !displayName.trim()) {
       Alert.alert('Error', 'Display name is required for setup');
       return;
     }
 
-    // Save the server URL before attempting auth
-    if (serverUrl.trim()) {
-      await setServerUrl(serverUrl.trim());
+    if (showCustomServer) {
+      await setServerUrl(normalizeServerUrl(serverUrl));
+    } else {
+      await resetServerUrl();
+      setServerUrlLocal(DEFAULT_API_URL);
     }
 
     setLoading(true);
     try {
-      if (isSetupMode) {
+      setResetMessage('');
+      setResetPreviewUrl(null);
+      if (isForgotMode) {
+        const result = await api.requestPasswordReset(email.trim());
+        setResetMessage(result.message);
+        setResetPreviewUrl(result.preview_url);
+      } else if (isSetupMode) {
         await api.setup({
           email: email.trim(),
           display_name: displayName.trim(),
@@ -107,7 +134,9 @@ export default function LoginScreen() {
       } else {
         await api.login(email.trim(), password.trim());
       }
-      setAuthenticated(true);
+      if (!isForgotMode) {
+        setAuthenticated(true);
+      }
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Authentication failed');
     } finally {
@@ -125,6 +154,43 @@ export default function LoginScreen() {
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
+        <View style={styles.menuRow}>
+          <Menu
+            visible={serverMenuVisible}
+            onDismiss={() => setServerMenuVisible(false)}
+            anchor={(
+              <IconButton
+                icon="dots-vertical"
+                size={20}
+                iconColor={colors.text}
+                onPress={() => setServerMenuVisible(true)}
+                style={styles.menuButton}
+              />
+            )}
+            contentStyle={{ backgroundColor: colors.surface }}
+          >
+            <Menu.Item
+              leadingIcon="server-network"
+              onPress={async () => {
+                setServerMenuVisible(false);
+                setShowCustomServer(false);
+                setConnectionStatus('idle');
+                await resetServerUrl();
+                setServerUrlLocal(DEFAULT_API_URL);
+              }}
+              title="Use HisabClub Dev"
+            />
+            <Menu.Item
+              leadingIcon="cog-outline"
+              onPress={() => {
+                setServerMenuVisible(false);
+                setShowCustomServer(true);
+                setServerUrlLocal((current) => normalizeServerUrl(current || DEFAULT_API_URL));
+              }}
+              title="Custom self-hosted domain"
+            />
+          </Menu>
+        </View>
         <FadeInView>
           <View style={styles.hero}>
             <BrandMark size={76} />
@@ -137,23 +203,44 @@ export default function LoginScreen() {
           <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Server Configuration</Text>
-              <TextInput
-                label="Server URL"
-                value={serverUrl}
-                onChangeText={setServerUrlLocal}
-                mode="outlined"
-                placeholder="https://your-server.com/api/v1"
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-                autoComplete="off"
-                textContentType="none"
-                importantForAutofill="no"
-                style={styles.input}
-                outlineColor={colors.border}
-                activeOutlineColor={colors.primary}
-              />
+              {!showCustomServer && (
+                <View style={styles.serverSummary}>
+                  <Text style={styles.serverLabel}>Default domain</Text>
+                  <Text style={styles.serverValue}>{DEFAULT_API_DOMAIN}</Text>
+                  <Text style={styles.serverHint}>
+                    Open the 3-dot menu to use a custom self-hosted backend.
+                  </Text>
+                </View>
+              )}
+              {showCustomServer && (
+                <TextInput
+                  label="Server URL"
+                  value={serverUrl}
+                  onChangeText={setServerUrlLocal}
+                  mode="outlined"
+                  placeholder="https://your-server.com or https://your-server.com/api/v1"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  autoComplete="off"
+                  textContentType="none"
+                  importantForAutofill="no"
+                  style={styles.input}
+                  outlineColor={colors.border}
+                  activeOutlineColor={colors.primary}
+                />
+              )}
               <View style={styles.urlButtons}>
+                {showCustomServer && (
+                  <Button
+                    mode="text"
+                    onPress={handleSaveUrl}
+                    style={styles.inlineButton}
+                    textColor={colors.primary}
+                  >
+                    Save
+                  </Button>
+                )}
                 <Button
                   mode="outlined"
                   onPress={handleTestConnection}
@@ -175,8 +262,19 @@ export default function LoginScreen() {
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>
-                {isSetupMode ? 'Create Account' : 'Sign In'}
+                {isForgotMode ? 'Reset Password' : isSetupMode ? 'Create Account' : 'Sign In'}
               </Text>
+              {resetMessage ? <Text style={styles.statusOk}>{resetMessage}</Text> : null}
+              {resetPreviewUrl ? (
+                <Button
+                  mode="text"
+                  onPress={() => Linking.openURL(resetPreviewUrl)}
+                  textColor={colors.primary}
+                  style={styles.previewButton}
+                >
+                  Open Reset Link
+                </Button>
+              ) : null}
 
               <TextInput
                 label="Email"
@@ -193,20 +291,22 @@ export default function LoginScreen() {
                 activeOutlineColor={colors.primary}
               />
 
-              <TextInput
-                label="Password"
-                value={password}
-                onChangeText={setPassword}
-                mode="outlined"
-                secureTextEntry
-                autoComplete="password"
-                textContentType="password"
-                style={styles.input}
-                outlineColor={colors.border}
-                activeOutlineColor={colors.primary}
-              />
+              {!isForgotMode && (
+                <TextInput
+                  label="Password"
+                  value={password}
+                  onChangeText={setPassword}
+                  mode="outlined"
+                  secureTextEntry
+                  autoComplete="password"
+                  textContentType="password"
+                  style={styles.input}
+                  outlineColor={colors.border}
+                  activeOutlineColor={colors.primary}
+                />
+              )}
 
-              {isSetupMode && (
+              {isSetupMode && !isForgotMode && (
                 <TextInput
                   label="Display Name"
                   value={displayName}
@@ -227,19 +327,35 @@ export default function LoginScreen() {
                 style={styles.submitButton}
                 buttonColor={colors.primary}
               >
-                {isSetupMode ? 'Create Account' : 'Sign In'}
+                {isForgotMode ? 'Send Reset Link' : isSetupMode ? 'Create Account' : 'Sign In'}
               </Button>
 
-              <Button
-                mode="text"
-                onPress={() => setIsSetupMode(!isSetupMode)}
-                style={styles.toggleButton}
-                textColor={colors.primary}
-              >
-                {isSetupMode
-                  ? 'Already have an account? Sign In'
-                  : 'First time? Create Account'}
-              </Button>
+              {!isForgotMode && (
+                <Button
+                  mode="text"
+                  onPress={() => setIsSetupMode(!isSetupMode)}
+                  style={styles.toggleButton}
+                  textColor={colors.primary}
+                >
+                  {isSetupMode
+                    ? 'Already have an account? Sign In'
+                    : 'First time? Create Account'}
+                </Button>
+              )}
+              {!isSetupMode && (
+                <Button
+                  mode="text"
+                  onPress={() => {
+                    setIsForgotMode(!isForgotMode);
+                    setResetMessage('');
+                    setResetPreviewUrl(null);
+                  }}
+                  style={styles.toggleButton}
+                  textColor={colors.primary}
+                >
+                  {isForgotMode ? 'Back to Sign In' : 'Forgot Password?'}
+                </Button>
+              )}
             </View>
           </Animated.View>
         </FadeInView>
@@ -257,6 +373,13 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     flexGrow: 1,
     padding: 24,
     justifyContent: 'center',
+  },
+  menuRow: {
+    alignItems: 'flex-end',
+    marginBottom: 12,
+  },
+  menuButton: {
+    margin: 0,
   },
   hero: {
     alignItems: 'center',
@@ -301,12 +424,40 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     marginBottom: 12,
     backgroundColor: COLORS.surface,
   },
+  serverSummary: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 12,
+  },
+  serverLabel: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 1.1,
+  },
+  serverValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginTop: 6,
+  },
+  serverHint: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 6,
+  },
   urlButtons: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    gap: 8,
   },
   urlButton: {
     borderColor: COLORS.primary,
+  },
+  inlineButton: {
+    alignSelf: 'center',
   },
   statusOk: {
     color: COLORS.success,
@@ -321,6 +472,10 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
   submitButton: {
     marginTop: 8,
     paddingVertical: 4,
+  },
+  previewButton: {
+    alignSelf: 'flex-start',
+    marginBottom: 8,
   },
   toggleButton: {
     marginTop: 8,

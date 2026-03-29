@@ -12,6 +12,8 @@ import BillsPage from './pages/BillsPage';
 import GmailPage from './pages/GmailPage';
 import ImportsPage from './pages/ImportsPage';
 import TaxPage from './pages/TaxPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
+import AccountPage from './pages/AccountPage';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   if (!api.isAuthenticated()) {
@@ -36,6 +38,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginRoute />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route
           path="/"
           element={
@@ -52,6 +55,7 @@ export default function App() {
           <Route path="budgets" element={<BudgetsPage />} />
           <Route path="bills" element={<BillsPage />} />
           <Route path="tax" element={<TaxPage />} />
+          <Route path="account" element={<AccountPage />} />
           <Route path="gmail" element={<GmailPage />} />
           <Route path="imports" element={<ImportsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

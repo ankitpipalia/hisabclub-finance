@@ -7,7 +7,9 @@ import logging
 from datetime import date
 
 from app.engines.llm.client import LLMClient
+from app.engines.llm.knowledge import StatementKnowledgeContext
 from app.engines.llm.sanitizer import sanitize_for_llm
+from app.engines.parser.hints import normalize_bank_hint
 from app.engines.parser.base import ExtractedStatement, ExtractedTransaction
 
 logger = logging.getLogger(__name__)
@@ -38,11 +40,18 @@ Rules:
 - All amounts must be positive numbers. Use "direction" to indicate debit/credit.
 - Parse dates carefully — they may be in DD/MM/YYYY, DD-MM-YYYY, DD MMM YYYY, etc.
 - If a transaction has no date, use the previous transaction's date.
+- Use the current document text as the primary source of truth. Customer history is supportive context only.
+- For credit-card statements, include statement-level metadata such as total due, minimum due, previous balance, and payments received when visible.
 - Return ONLY valid JSON, no explanations or markdown."""
 
 
 async def llm_parse_statement(
-    client: LLMClient, page_text: str
+    client: LLMClient,
+    page_text: str,
+    *,
+    bank_hint: str | None = None,
+    account_type_hint: str | None = None,
+    knowledge_context: StatementKnowledgeContext | None = None,
 ) -> ExtractedStatement | None:
     """Use LLM to extract transactions from bank statement text.
 
@@ -55,11 +64,17 @@ async def llm_parse_statement(
     if len(sanitized) > 12000:
         sanitized = sanitized[:12000] + "\n... [TRUNCATED]"
 
+    context_text = knowledge_context.as_prompt_context() if knowledge_context else ""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": f"Extract transactions from this bank statement:\n\n{sanitized}",
+            "content": (
+                f"User-provided bank hint: {bank_hint or 'none'}\n"
+                f"User-provided account type hint: {account_type_hint or 'none'}\n"
+                f"Relevant customer context:\n{context_text or 'none'}\n\n"
+                f"Extract transactions from this statement:\n\n{sanitized}"
+            ),
         },
     ]
 
@@ -123,12 +138,26 @@ async def llm_parse_statement(
             logger.warning("LLM parsed zero valid transactions")
             return None
 
+        bank_name = normalize_bank_hint(data.get("bank_name")) or bank_hint or "Unknown"
+        account_type = str(data.get("account_type", "savings")).strip().lower()
+        if account_type_hint == "credit_card":
+            account_type = "credit_card"
+        elif account_type_hint == "bank_account" and account_type == "credit_card":
+            account_type = "savings"
+        elif account_type not in {"credit_card", "savings", "current"}:
+            account_type = "savings"
+
         result = ExtractedStatement(
-            bank_name=data.get("bank_name", "Unknown"),
-            account_type=data.get("account_type", "savings"),
+            bank_name=bank_name,
+            account_type=account_type,
             account_number_masked=data.get("account_number_masked"),
             statement_period_start=_parse_date(data.get("statement_period_start")),
             statement_period_end=_parse_date(data.get("statement_period_end")),
+            due_date=_parse_date(data.get("due_date")),
+            min_amount_due=_safe_float(data.get("min_amount_due")),
+            total_amount_due=_safe_float(data.get("total_amount_due")),
+            previous_balance=_safe_float(data.get("previous_balance")),
+            payments_received=_safe_float(data.get("payments_received")),
             opening_balance=_safe_float(data.get("opening_balance")),
             closing_balance=_safe_float(data.get("closing_balance")),
             transactions=transactions,

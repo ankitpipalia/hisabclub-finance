@@ -8,24 +8,34 @@ import AppLogo from '../components/AppLogo';
 export default function LoginPage() {
   const navigate = useNavigate();
   const [isSetup, setIsSetup] = useState(false);
+  const [isForgotMode, setIsForgotMode] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setMessage('');
+    setPreviewUrl(null);
     setLoading(true);
 
     try {
-      if (isSetup) {
+      if (isForgotMode) {
+        const result = await api.requestPasswordReset(email);
+        setMessage(result.message);
+        setPreviewUrl(result.preview_url);
+      } else if (isSetup) {
         await api.setup({ email, display_name: displayName, password });
+        navigate('/');
       } else {
         await api.login(email, password);
+        navigate('/');
       }
-      navigate('/');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Something went wrong';
       setError(message);
@@ -64,17 +74,32 @@ export default function LoginPage() {
           <section className="hc-panel">
             <div className="hc-panel-head">
               <div>
-                <h2 className="hc-panel-title">{isSetup ? 'Create Account' : 'Sign In'}</h2>
+                <h2 className="hc-panel-title">
+                  {isForgotMode ? 'Reset Password' : isSetup ? 'Create Account' : 'Sign In'}
+                </h2>
                 <p className="hc-panel-sub">
-                  {isSetup ? 'Initialize your first local user.' : 'Access your local finance workspace.'}
+                  {isForgotMode
+                    ? 'Request a one-time password reset link.'
+                    : isSetup
+                      ? 'Initialize your first local user.'
+                      : 'Access your local finance workspace.'}
                 </p>
               </div>
             </div>
 
             {error && <div className="hc-msg hc-msg-danger">{error}</div>}
+            {message && <div className="hc-msg hc-msg-ok">{message}</div>}
+            {previewUrl && (
+              <div className="hc-panel" style={{ marginTop: '0.8rem' }}>
+                <p className="hc-panel-sub">SMTP is not configured. Local preview link:</p>
+                <a href={previewUrl} className="hc-btn hc-btn-primary" style={{ marginTop: '0.6rem' }}>
+                  Open Reset Link
+                </a>
+              </div>
+            )}
 
             <form onSubmit={handleSubmit} className="space-y-4" style={{ marginTop: '0.9rem' }}>
-              {isSetup && (
+              {isSetup && !isForgotMode && (
                 <div>
                   <label htmlFor="display-name" className="hc-label">
                     Display Name
@@ -105,35 +130,64 @@ export default function LoginPage() {
                 />
               </div>
 
-              <div>
-                <label htmlFor="password" className="hc-label">
-                  Password
-                </label>
-                <input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="hc-input"
-                  autoComplete={isSetup ? 'new-password' : 'current-password'}
-                  required
-                />
-              </div>
+              {!isForgotMode && (
+                <div>
+                  <label htmlFor="password" className="hc-label">
+                    Password
+                  </label>
+                  <input
+                    id="password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="hc-input"
+                    autoComplete={isSetup ? 'new-password' : 'current-password'}
+                    required
+                  />
+                </div>
+              )}
 
               <button type="submit" disabled={loading} className="hc-btn hc-btn-solid" style={{ width: '100%' }}>
-                {loading ? 'Working...' : isSetup ? 'Create Account' : 'Sign In'}
-                <ArrowRight size={16} strokeWidth={1.5} />
+                {loading
+                  ? 'Working...'
+                  : isForgotMode
+                    ? 'Send Reset Link'
+                    : isSetup
+                      ? 'Create Account'
+                      : 'Sign In'}
+                {!isForgotMode && <ArrowRight size={16} strokeWidth={1.5} />}
               </button>
             </form>
 
-            <button
-              type="button"
-              onClick={() => setIsSetup((v) => !v)}
-              className="hc-btn hc-btn-primary"
-              style={{ marginTop: '0.8rem' }}
-            >
-              {isSetup ? 'Already have an account? Sign In' : 'First time? Create Account'}
-            </button>
+            <div className="flex flex-wrap gap-3" style={{ marginTop: '0.8rem' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsForgotMode(false);
+                  setIsSetup((v) => !v);
+                  setError('');
+                  setMessage('');
+                }}
+                className="hc-btn hc-btn-primary"
+              >
+                {isSetup ? 'Already have an account? Sign In' : 'First time? Create Account'}
+              </button>
+
+              {!isSetup && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsForgotMode((v) => !v);
+                    setError('');
+                    setMessage('');
+                    setPreviewUrl(null);
+                  }}
+                  className="hc-btn hc-btn-ghost"
+                >
+                  {isForgotMode ? 'Back to Sign In' : 'Forgot password?'}
+                </button>
+              )}
+            </div>
           </section>
         </div>
       </div>

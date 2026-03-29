@@ -14,6 +14,26 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 
 ---
 
+## Current Supported Runtime
+
+This is the verified development/runtime topology as of 2026-03-30:
+
+- **Backend** runs on the host at `http://localhost:8356`
+- **Web frontend** is built to `frontend/dist` and served by the backend at `/`
+- **PostgreSQL** and **Redis** run in Docker
+- **Shared local LLM** runs outside this repo from `/home/ankit/Documents/local-llm` at `http://localhost:8472/v1`
+- **Local document knowledge** is stored in PostgreSQL and populated from uploads, folder intake, and backfill
+- **Expo Metro** runs on the host at `http://localhost:8081` for mobile debug
+- **Physical Android devices** connect through `adb reverse` for `8356` and `8081`
+- **Permanent dev API domain** defaults to `https://hisabclub-dev-api.ankit-tech.store/api/v1`
+- **Permanent dev web domain** defaults to `https://hisabclub-dev-web.ankit-tech.store`
+- **Recommended public tunnel target for both API and web** is the host backend on `http://192.168.1.69:8356`
+- **Vite on `:5276`** is optional local-only hot reload and should not be the stable public web origin
+
+The Docker `api` service is not the primary supported path right now. The supported path is host backend + Docker db/redis + host LLM.
+
+---
+
 ## Architecture Overview
 
 ```
@@ -24,17 +44,18 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
                         └──────────┬──────────┘
                                    │
 ┌─────────────────┐    ┌──────────▼──────────┐    ┌─────────────────┐
-│   Web Frontend  │───▶│   FastAPI Backend    │◀───│  LLM (QwQ-32B)  │
+│   Web Frontend  │───▶│   FastAPI Backend    │◀───│ Shared Local LLM│
 │   React + Vite  │    │   Python 3.10       │    │  llama.cpp      │
-│   Port 5173 dev │    │   Port 8000         │    │  Port 8080      │
-│   Served from   │    │   Serves API + SPA  │    └─────────────────┘
-│   backend /     │    └──────────┬──────────┘
-└─────────────────┘               │
+│   Built to dist │    │   Host runtime      │    │  Host runtime    │
+│   Served at /   │    │   Port 8356         │    │  Port 8472       │
+│   via backend   │    │   Serves API + SPA  │    └─────────────────┘
+└─────────────────┘    └──────────┬──────────┘
+                                   │
                         ┌─────────┴─────────┐
                         │                   │
                    ┌────▼────┐        ┌────▼────┐
                    │ Postgres│        │  Redis  │
-                   │ Port 5433│        │Port 6380│
+                   │ Port 6543│       │Port 6769│
                    │ (Docker)│        │(Docker) │
                    └─────────┘        └─────────┘
 ```
@@ -57,10 +78,47 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 | **Mobile UI** | React Native Paper (Material Design 3) | 5.15 |
 | **Mobile State** | TanStack React Query | 5.94 |
 | **SMS Reader** | Custom Kotlin native module (ContentResolver) | - |
-| **LLM** | llama.cpp server + QwQ-32B (Q4_K_M) | - |
+| **LLM** | shared llama.cpp server + Qwen3.5-27B GGUF | - |
 | **Containers** | Docker Compose | - |
 
 ---
+
+## Recent Parsing / Retrieval Changes
+
+- Upload and folder-import flows now ingest decrypted PDF text into `document_knowledge_chunks`.
+- Statement parsing builds same-user context from prior chunks and prior parsed statements before LLM classification or fallback extraction.
+- Bank inference now prefers statement-header matches over incidental bank names inside transaction descriptions.
+- Upload review notifications now have a persistent backend feed at `GET /api/v1/upload/recent`.
+- Statements can now be deleted with full local cleanup, including `raw_pdfs`, stored PDF files, and `document_knowledge_chunks`.
+- Statements can now be re-reviewed through the local LLM using the stored PDF as the source of truth.
+- Existing PDFs can be reindexed into the local knowledge store with `make backfill-knowledge`.
+- Canonical promotion now runs atomically inside a DB savepoint so partial failures cannot leave orphaned ledger rows.
+- Statement ingestion now computes semantic statement fingerprints and blocks accidental duplicate statement insertion unless reprocess is explicitly allowed.
+- Transaction dedup now has a deterministic fingerprint path (`user + account + date + abs(amount) + normalized description prefix`) in addition to fuzzy matching.
+- Transfer/card-payment pairing now persists auditable matches in `transfer_matches`.
+- Gmail OAuth credentials are now encrypted at rest and remain backward-compatible with previously stored plaintext rows.
+
+## 2026-03-30 Architecture-Update Implementation
+
+- Statement ingestion is now **durable and queue-first**:
+  - `upload/pdf` creates `raw_pdfs` + `extraction_jobs`, then returns `reviewing`
+  - worker loop claims jobs from PostgreSQL with retry/backoff and DLQ state
+  - upload status/recent endpoints now surface job state even before statement materialization
+- Added operational APIs for ingestion reliability:
+  - `GET /api/v1/upload/jobs/dlq`
+  - `POST /api/v1/upload/jobs/{job_id}/requeue`
+  - `GET /api/v1/upload/parser-health`
+- Added institution password-pattern registry and resolver:
+  - model: `institution_password_patterns`
+  - APIs: list/upsert/delete under `/api/v1/gmail/password-patterns`
+  - used by manual upload, Gmail sync, and statement re-review for encrypted PDFs
+- Gmail sync now enqueues parse jobs instead of parsing attachments inline.
+- Parser observability now updates `institution_parser_support` success/failure counters from worker outcomes.
+- Added DB-level tenant isolation migrations:
+  - RLS policies + FORCE RLS on user-scoped tables
+  - request context via `app.current_user_id`
+  - worker bypass via `app.worker_mode=1`
+- Added runtime DB-role switch (`SET ROLE hisabclub_rls`) in API/worker sessions so RLS remains effective even if the bootstrap user has elevated privileges.
 
 ## Directory Structure
 
@@ -86,7 +144,7 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   ├── database.py                # Async SQLAlchemy engine + session
 │   │   ├── dependencies.py            # DI: DbSession, CurrentUser (JWT auth)
 │   │   │
-│   │   ├── models/                    # SQLAlchemy ORM (18 tables)
+│   │   ├── models/                    # SQLAlchemy ORM (19 tables)
 │   │   │   ├── base.py               # Base, TimestampMixin, UUIDPrimaryKeyMixin
 │   │   │   ├── user.py               # Users (email, password_hash, first_name, dob)
 │   │   │   ├── raw_pdf.py            # Uploaded PDFs (hash dedup, storage_path)
@@ -101,6 +159,7 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   ├── connected_account.py   # Gmail OAuth connections
 │   │   │   ├── budget.py             # Budget per category
 │   │   │   ├── bill.py               # CC bill tracking (auto-created from statements)
+│   │   │   ├── document_knowledge_chunk.py # Local per-user PDF chunk memory for retrieval
 │   │   │   ├── insights.py           # MonthlySummary + RecurringPattern
 │   │   │   └── __init__.py           # Exports ALL models (MUST be updated when adding models)
 │   │   │
@@ -108,10 +167,10 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   ├── auth.py, statement.py, transaction.py, upload.py
 │   │   │   ├── sms.py, budget.py, bill.py, insights.py
 │   │   │
-│   │   ├── api/v1/                    # FastAPI routers (27 endpoints)
+│   │   ├── api/v1/                    # FastAPI routers
 │   │   │   ├── router.py             # Aggregates ALL routers (MUST update when adding)
-│   │   │   ├── auth.py               # POST /setup, /login, GET /me
-│   │   │   ├── upload.py             # POST /pdf (with debug text saving)
+│   │   │   ├── auth.py               # POST /setup, /login, /forgot-password, /reset-password, /change-password, GET /me
+│   │   │   ├── upload.py             # POST /pdf, GET /recent, GET /{pdf_id}/status
 │   │   │   ├── statements.py         # GET list + detail
 │   │   │   ├── transactions.py       # GET list + detail, PATCH update, GET sources
 │   │   │   ├── categories.py         # GET list
@@ -121,7 +180,8 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   ├── budgets.py            # CRUD budgets with spent calculation
 │   │   │   ├── bills.py              # CRUD bills (status: upcoming/unpaid/paid/all)
 │   │   │   ├── export.py             # GET /csv (StreamingResponse)
-│   │   │   └── gmail.py              # OAuth connect, callback, sync, allowlist
+│   │   │   ├── gmail.py              # OAuth connect, callback, sync, allowlist
+│   │   │   └── imports.py            # Folder-intake + artifact listing/download
 │   │   │
 │   │   ├── engines/                   # Core business logic
 │   │   │   ├── parser/               # Statement parsing engine
@@ -130,7 +190,6 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   │   ├── pdf_utils.py      # pikepdf decrypt + pdfplumber text extraction
 │   │   │   │   ├── amount_utils.py   # parse_indian_amount() handles C prefix, Rs., INR, ₹
 │   │   │   │   │                     # parse_indian_date() handles DD/MM/YYYY, DD-MMM-YYYY etc.
-│   │   │   │   ├── ocr.py            # Tesseract fallback (stub)
 │   │   │   │   └── templates/        # 6 bank-specific parsers
 │   │   │   │       ├── hdfc_cc.py    # HDFC CC (handles C prefix amounts, +/Cr credits, DATE|TIME)
 │   │   │   │       ├── hdfc_savings.py # HDFC Savings (3-amt, 2-amt, labelled patterns)
@@ -152,8 +211,10 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   │
 │   │   │   ├── llm/                   # LLM fallback (feature-flagged)
 │   │   │   │   ├── client.py          # OpenAI-compatible HTTP client (httpx)
+│   │   │   │   ├── knowledge.py       # Customer-scoped retrieval over stored PDF chunks
 │   │   │   │   ├── sanitizer.py       # Strip PII before LLM (cards, names, PAN, Aadhaar)
 │   │   │   │   ├── parse_fallback.py  # LLM parses unknown PDF layouts → ExtractedStatement
+│   │   │   │   ├── statement_classifier.py # LLM bank/account-type classification for ambiguous PDFs
 │   │   │   │   ├── merchant_cleanup.py # LLM normalizes merchant names
 │   │   │   │   └── categorizer.py     # LLM suggests transaction categories
 │   │   │   │
@@ -167,29 +228,35 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   ├── merchants.py           # 48 merchants + 90 patterns (Swiggy, Amazon, Uber, etc.)
 │   │   │   └── run.py                 # Seed runner (python -m app.seed.run)
 │   │   │
-│   │   └── tasks/                     # Background tasks (stubs for ARQ worker)
+│   │   └── tasks/
+│   │       └── backfill_document_knowledge.py # Reindex existing PDFs into local retrieval memory
 │   │
-│   └── tests/                         # Test structure (stubs)
-│       ├── conftest.py
-│       ├── fixtures/
-│       ├── test_parser/, test_ledger/, test_api/
+│   └── tests/                         # Active pytest suite
+│       ├── test_api/                  # Upload + insights API coverage
+│       ├── test_insights/             # Reconciliation, integrity, tax compliance
+│       ├── test_intake/               # Document classification
+│       ├── test_ledger/               # Nature classification
+│       ├── test_llm/                  # LLM client payload behavior
+│       └── test_parser/               # Credit-card parser coverage + hint inference
 │
 ├── frontend/                          # React + Vite + TailwindCSS web app
 │   ├── package.json
-│   ├── vite.config.ts                 # Proxy /api → :8000, allowedHosts for tunnel
+│   ├── vite.config.ts                 # Optional local-only hot reload on :5276, proxy /api → :8356
 │   ├── tsconfig.json
 │   ├── src/
 │   │   ├── main.tsx                   # Entry point
 │   │   ├── index.css                  # Tailwind import
 │   │   ├── App.tsx                    # Routes: /, /upload, /transactions, /statements,
-│   │   │                              #   /insights, /budgets, /bills, /gmail
+│   │   │                              #   /insights, /budgets, /bills, /tax, /gmail, /imports
 │   │   ├── api/
 │   │   │   └── client.ts             # ApiClient class + all type interfaces
 │   │   │                              # getBills/getBudgets unwrap {items} from response
 │   │   ├── components/
 │   │   │   └── Layout.tsx            # Sidebar nav + main content + Export CSV button
 │   │   └── pages/
-│   │       ├── LoginPage.tsx
+│   │       ├── LoginPage.tsx         # Sign in + setup + forgot-password request
+│   │       ├── ResetPasswordPage.tsx # Public one-time token reset
+│   │       ├── AccountPage.tsx       # Authenticated profile + change-password
 │   │       ├── DashboardPage.tsx      # Summary cards + PieChart + BarChart + bills + recent txns
 │   │       ├── UploadPage.tsx         # Drag-drop PDF + password + bank hint
 │   │       ├── TransactionsPage.tsx   # Filterable paginated table
@@ -197,6 +264,8 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │       ├── InsightsPage.tsx       # Full analytics: PieChart, BarChart, recurring, top merchants
 │   │       ├── BudgetsPage.tsx        # Budget progress bars + create/delete
 │   │       ├── BillsPage.tsx          # Upcoming/Paid tabs + mark paid + due badges
+│   │       ├── TaxPage.tsx            # Tax-compliance and transfer reconciliation
+│   │       ├── ImportsPage.tsx        # Folder intake status + artifact viewer
 │   │       └── GmailPage.tsx          # Connect Gmail + allowlist + sync
 │   └── dist/                          # Built static files (served by backend)
 │
@@ -218,7 +287,7 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   ├── AuthStack.tsx          # LoginScreen
 │   │   │   └── MainTabs.tsx           # Bottom tabs: Home, Transactions, Insights, Settings
 │   │   ├── screens/                   # 11 screens
-│   │   │   ├── LoginScreen.tsx        # Server URL + email/password + autofill-friendly
+│   │   │   ├── LoginScreen.tsx        # Server URL + email/password + forgot-password request
 │   │   │   ├── DashboardScreen.tsx    # Summary + bills + categories + quick actions + recent txns
 │   │   │   ├── TransactionsScreen.tsx # Infinite scroll + search + filter
 │   │   │   ├── TransactionDetailScreen.tsx # View + edit category/notes
@@ -227,7 +296,7 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   ├── InsightsScreen.tsx     # Category bars + recurring + top merchants
 │   │   │   ├── BudgetsScreen.tsx      # Progress bars + FAB create dialog
 │   │   │   ├── BillsScreen.tsx        # Segmented filter + due badges + mark paid
-│   │   │   ├── SettingsScreen.tsx     # Server URL, quick access, SMS sync link, logout
+│   │   │   ├── SettingsScreen.tsx     # Theme, server URL, password change, SMS sync, logout
 │   │   │   └── SmsSyncScreen.tsx      # Permission request, Sync Now, Preview, history
 │   │   ├── sms/                       # On-device SMS processing (privacy-first)
 │   │   │   ├── bankPatterns.ts        # 30+ sender IDs, regex patterns, amount/date extraction
@@ -236,6 +305,8 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │   │   │   ├── SmsSyncService.ts      # Orchestrator: read → filter → parse → POST /sms/batch
 │   │   │   ├── SmsBridge.ts           # Platform gate (PermissionsAndroid for popup)
 │   │   │   └── types.ts
+│   │   ├── theme/
+│   │   │   └── AppThemeProvider.tsx   # Light/dark/auto theme state for Paper + navigation
 │   │   ├── modules/
 │   │   │   └── sms-reader/
 │   │   │       ├── index.ts           # JS interface to native module
@@ -256,18 +327,13 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload cr
 │               ├── SmsReaderModule.kt
 │               └── SmsReaderPackage.kt
 │
-├── models/                            # LLM model files
-│   └── qwq-32b-q4_k_m.gguf          # 19.8GB, Qwen QWQ 32B Q4_K_M quantization
-│
 ├── uploads/                           # User-uploaded PDFs (gitignored)
 │
 ├── infra/docker/                      # Infrastructure templates (stubs)
 │
-├── docker-compose.yml                 # PostgreSQL 16 (:5433) + Redis 7 (:6380)
-├── docker-compose.llm.yml            # Optional: llama.cpp server (image: ghcr.io/ggml-org/llama.cpp:server)
-├── start-llm.sh                      # Script to start LLM via Docker (GPU issues — use native instead)
+├── docker-compose.yml                 # PostgreSQL 16 (:6543) + Redis 7 (:6769)
 ├── Makefile                           # Dev commands (uses backend/.venv/bin)
-├── .env                               # Active config (LLM_ENABLED=true, ports 5433/6380)
+├── .env                               # Active config (LLM_ENABLED=true, ports 6543/6769)
 ├── .env.example                       # Template
 ├── .gitignore                         # Standard Python/Node/Docker ignores + uploads/
 └── knowledge.md                       # THIS FILE
@@ -308,13 +374,16 @@ Raw Sources → Parsed Transactions → Canonical Transactions
 
 ---
 
-## API Endpoints (27 routes)
+## API Endpoints
 
 ### Auth (`/api/v1/auth`)
 | Method | Path | Description |
 |---|---|---|
 | POST | `/setup` | First-time user creation (blocks if user exists) |
 | POST | `/login` | Returns JWT access + refresh tokens |
+| POST | `/forgot-password` | Issues one-time password reset instructions |
+| POST | `/reset-password` | Consumes a reset token and sets a new password |
+| POST | `/change-password` | Changes password for the authenticated user |
 | GET | `/me` | Current user profile |
 
 ### Upload (`/api/v1/upload`)
@@ -328,6 +397,7 @@ Raw Sources → Parsed Transactions → Canonical Transactions
 |---|---|---|
 | GET | `/` | List statements (filter: bank, account_type) |
 | GET | `/{id}` | Statement detail |
+| GET | `/{id}/pdf` | Stream the source PDF for browser viewing |
 
 ### Transactions (`/api/v1/transactions`)
 | Method | Path | Description |
@@ -336,6 +406,7 @@ Raw Sources → Parsed Transactions → Canonical Transactions
 | GET | `/{id}` | Detail with category name |
 | PATCH | `/{id}` | Update (category_id, merchant_id, notes, tags, is_excluded) — creates override audit |
 | GET | `/{id}/sources` | Source lineage (which statement/SMS contributed) |
+| POST | `/reclassify-transfer-payments` | Re-run transfer and credit-card payment reclassification |
 
 ### Categories (`/api/v1/categories`) — GET list
 ### Merchants (`/api/v1/merchants`) — GET list with search
@@ -347,6 +418,8 @@ Raw Sources → Parsed Transactions → Canonical Transactions
 | GET | `/monthly-summary?month=` | Income/expense/net + category breakdown + top merchants + vs_last_month |
 | GET | `/trends?months=6` | Multi-month trend data for charts |
 | GET | `/recurring` | Detected recurring transactions |
+| GET | `/reconciliation` | Match internal transfers across accounts/statements |
+| GET | `/tax-compliance` | New-regime tax estimate + document coverage + action items |
 | POST | `/recompute?months=12` | Force recompute all summaries |
 
 ### Budgets (`/api/v1/budgets`)
@@ -369,6 +442,15 @@ Raw Sources → Parsed Transactions → Canonical Transactions
 | POST | `/sync` | Trigger manual sync |
 | GET | `/allowlist` | Get sender allowlist |
 | PUT | `/allowlist` | Update allowlist |
+
+### Imports (`/api/v1/imports`)
+| Method | Path | Description |
+|---|---|---|
+| POST | `/folder` | Scan a local document directory and import supported files |
+| GET | `/artifacts` | List discovered artifacts and parse status |
+| GET | `/artifacts/{id}/file` | Stream original artifact for browser viewing |
+| GET | `/parser-support-queue` | Group unresolved bank-statement artifacts by support gap |
+| POST | `/reclassify-nature` | Recompute transaction nature labels from ledger data |
 
 ### Health
 | GET | `/health` | Returns {status: "ok", app: "HisabClub"} |
@@ -426,27 +508,19 @@ The `android/` directory is regenerated. You MUST:
 
 ## LLM Configuration
 
-### Running Natively (NOT Docker — GPU passthrough issues)
+### Shared Local LLM Runtime
 ```bash
-llama-server \
-  --model <repo-root>/models/qwq-32b-q4_k_m.gguf \
-  --host 0.0.0.0 --port 8080 \
-  --ctx-size 4096 --n-gpu-layers 99
+cd /home/ankit/Documents/local-llm
+./llama-turbo-cuda.sh start
 ```
 
 ### Model Details
-- **File**: `<repo-root>/models/qwq-32b-q4_k_m.gguf` (download separately, not committed)
-- **Model**: Qwen QWQ-32B, Q4_K_M quantization
+- **File**: `/home/ankit/Documents/local-llm/models/unsloth-Qwen3.5-27B-GGUF/Qwen3.5-27B-Q3_K_M.gguf`
+- **Model**: Qwen3.5-27B, Q3_K_M quantization
 - **GPU**: NVIDIA RTX A5000 (24GB VRAM) — all 65 layers offloaded
 - **Performance**: ~27 tokens/sec
-- **API**: OpenAI-compatible at `http://localhost:8080/v1`
-
-### Docker Alternative (if GPU passthrough works)
-```bash
-docker compose -f docker-compose.yml -f docker-compose.llm.yml up -d llm
-```
-Image: `ghcr.io/ggml-org/llama.cpp:server`
-Note: NVIDIA Container Toolkit is installed but `--gpus all` had CDI issues.
+- **API**: OpenAI-compatible at `http://localhost:8472/v1`
+- **Ownership**: model runtime is managed in `/home/ankit/Documents/local-llm`, not in this repo
 
 ### LLM Usage in App
 - **Feature-flagged**: `LLM_ENABLED=true` in `.env`
@@ -454,7 +528,7 @@ Note: NVIDIA Container Toolkit is installed but `--gpus all` had CDI issues.
 - **Merchant normalization**: Clean up messy raw merchant descriptions
 - **Category suggestion**: Pick best category from list
 - **PII sanitized** before any LLM call (cards, names, PAN, Aadhaar, OTPs stripped)
-- **QwQ is a reasoning model**: Needs higher max_tokens (500+) for chain-of-thought
+- **Qwen local runtime**: requests set `chat_template_kwargs.enable_thinking=false` so local llama.cpp returns usable `message.content`
 
 ---
 
@@ -481,10 +555,19 @@ export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:
 
 ## Build & Deploy Commands
 
+### Recommended local workflow
+```bash
+make setup
+make local-stack
+make local-check
+```
+
+`make local-stack` is the supported entrypoint. It starts Docker db/redis, ensures the shared local LLM is up, builds the frontend, applies migrations, seeds categories/merchants, and runs the backend on the host.
+
 ### Backend
 ```bash
 cd backend
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info   # Start
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8356 --log-level info   # Start
 .venv/bin/alembic upgrade head                                                  # Apply migrations
 .venv/bin/alembic revision --autogenerate -m "description"                     # New migration
 .venv/bin/python -m app.seed.run                                               # Seed categories + merchants
@@ -493,8 +576,8 @@ cd backend
 ### Web Frontend
 ```bash
 cd frontend
-npm run dev           # Dev server on :5173 (NOT for production via tunnel)
-npx vite build        # Build to dist/ (served by backend at /)
+npm run dev           # Dev server on :5276 when needed
+npm run build         # Build to dist/ (served by backend at /)
 ```
 
 ### Mobile APK
@@ -521,11 +604,18 @@ cd android && ./gradlew assembleRelease
 /usr/bin/adb shell am start -n com.hisabclub.app/.MainActivity
 ```
 
+### Debug mobile against local backend
+```bash
+make android-install
+make mobile-dev
+```
+
+This applies `adb reverse` for `8356` and `8081`, then starts Metro for the dev client.
+
 ### Docker Services
 ```bash
 docker compose up -d                 # Start PostgreSQL + Redis
 docker compose down                  # Stop
-docker compose -f docker-compose.yml -f docker-compose.llm.yml up -d llm  # LLM (if GPU works)
 ```
 
 ---
@@ -565,37 +655,27 @@ docker compose -f docker-compose.yml -f docker-compose.llm.yml up -d llm  # LLM 
 
 ---
 
-## Known Issues & Not Working
+## Current Gaps / Operational Notes
 
-### Critical
-1. **HDFC CC parser total_due/min_due/credit_limit not parsing** — The Swiggy HDFC card puts these in a non-standard table layout where fields like `TOTAL AMOUNT DUE`, `MINIMUM DUE`, `CREDIT LIMIT` are on a header row and values are on the next row with `C` prefix. The regex looks for them on the same line. Transactions (15) parse correctly though.
+1. **Parser coverage is still bank-template heavy** — HDFC, Axis, and SBI formats are the strongest supported paths. Kotak, BOB, ICICI, and atypical statement layouts still depend on classifier heuristics and LLM fallback, so some imports remain unresolved.
+2. **Gmail OAuth is not usable until credentials are configured** — `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` are empty by default.
+3. **Docker API runtime is not the recommended path** — the verified topology is host backend + Docker db/redis + host LLM.
+4. **Expo prebuild still wipes native Android customizations** — after `expo prebuild --clean`, the SMS reader Kotlin files and `MainApplication.kt` integration must be restored.
+5. **Expo debug loader can emit a non-fatal startup warning** — during Metro handoff on device, a dev-only loading popup warning may appear even though the app stays alive.
+6. **Redis is present but lightly used** — there is no full background worker pipeline yet.
+7. **Frontend bundle is large** — the production build currently reports a Vite chunk-size warning, but it builds and runs correctly.
 
-2. **`expo prebuild` wipes native customizations** — Every time `npx expo prebuild --platform android --clean` runs, the Kotlin SMS reader files and MainApplication.kt changes are lost. Must re-copy and re-edit manually.
+---
 
-3. **ADB streamed install intermittently fails** — Use `adb push + pm install` workaround instead of `adb install`.
+## Verified State (2026-03-29)
 
-### SMS
-4. **SMS native module untested on device** — The Kotlin ContentResolver code was written but the actual SMS reading hasn't been verified on a physical device with real bank SMS. The PermissionsAndroid dialog works.
-
-5. **SMS sync doesn't run in background yet** — The `expo-task-manager` + `expo-background-fetch` setup is coded but hasn't been tested. Manual "Sync Now" works.
-
-### Backend
-6. **Gmail OAuth not configured** — `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` are empty. Need Google Cloud Console setup with OAuth consent screen.
-
-7. **No tests written** — Test structure exists but no actual test files.
-
-8. **Redis not used** — Redis is running but no caching or task queue is implemented. ARQ worker is stub only.
-
-9. **No multi-user support in practice** — Auth works but features like shared household dashboards aren't built.
-
-10. **Docker GPU passthrough broken** — NVIDIA Container Toolkit installed but `--gpus all` gives CDI error. LLM runs natively as workaround.
-
-### Frontend
-11. **InsightsPage/BudgetsPage/BillsPage may have edge cases** — Built by agents, not thoroughly manually tested.
-
-12. **No PWA support** — Web app doesn't work offline.
-
-13. **Git repo has 0 commits** — All code is untracked.
+- Backend health endpoint returns OK
+- Shared local LLM responds on `:8472`
+- Frontend production build succeeds
+- Backend pytest suite passes: `27 passed`
+- Seeded categories are available after login: `73`
+- Web frontend renders through the backend-served SPA
+- Android debug app installs and launches on a connected physical device
 
 ---
 
@@ -647,34 +727,32 @@ docker compose -f docker-compose.yml -f docker-compose.llm.yml up -d llm  # LLM 
 ## Future Plan & Goals
 
 ### Short-term (Next Sprint)
-1. **Fix HDFC metadata extraction** — Parse total_due, min_due, credit_limit from the table format
-2. **Write tests** — Parser unit tests with sample PDF text, API integration tests
-3. **Initial git commit** — Commit all code, set up .gitignore properly
-4. **Test SMS on real device** — Verify native module reads actual bank SMS
-5. **Background SMS sync** — Test and enable expo-task-manager periodic sync
+1. **Broaden parser coverage** — Add Kotak, ICICI, BOB, and other common Indian statement formats
+2. **Increase ingestion confidence** — Expand tests around folder intake, unsupported-bank routing, and LLM fallback
+3. **Test SMS on real device with live messages** — Verify native module classification against actual bank senders
+4. **Harden transfer intelligence** — Improve CC payment matching and statement-total reconciliation
+5. **Create the initial clean commit history** — The working tree is still pre-history and should be committed intentionally
 
 ### Medium-term
-6. **More bank parsers** — ICICI CC, Kotak CC, Yes Bank, IndusInd, AMEX India
-7. **Gmail OAuth setup** — Google Cloud Console, OAuth consent screen, restricted scope verification
-8. **OCR fallback** — Tesseract for scanned/image-based PDFs
-9. **Settlement matching** — Match CC bill payment (bank debit) to CC statement total
-10. **User correction learning** — When user edits merchant/category, auto-apply to future matches
-11. **Multi-user auth** — Proper registration flow, password reset, email verification
-12. **Family mode** — Merge spouse/family cards into shared dashboard
+6. **Gmail OAuth setup** — Google Cloud Console, OAuth consent screen, restricted scope verification
+7. **OCR fallback** — Add an image-based PDF path for scanned statements
+8. **User correction learning** — When user edits merchant/category, auto-apply to future matches
+9. **Multi-user auth** — Proper registration flow, password reset, email verification
+10. **Family mode** — Merge spouse/family cards into shared dashboard
 
 ### Long-term
-13. **Account Aggregator integration** — India's AA ecosystem (Sahamati) for direct bank data
-14. **Rewards tracking** — Credit card reward points from statements
-15. **Encryption at rest** — AES-256 for stored PDFs, encrypted DB columns for sensitive data
-16. **Zero-retention mode** — Delete PDFs after parsing, keep only structured data
-17. **iOS support** — Expo build for iOS (no SMS, but all other features)
-18. **Play Store distribution** — Apply for SMS permission exception or use SMS Retriever API
-19. **Automated backups** — PostgreSQL pg_dump on schedule
-20. **Notification system** — Bill due date reminders, unusual spending alerts
-21. **PWA** — Offline-capable web app with service worker
-22. **Import from other apps** — CSV import from Walnut, Axio, Money Manager
-23. **API rate limiting** — Production hardening
-24. **Audit logging** — Track all data access for compliance
+11. **Account Aggregator integration** — India's AA ecosystem (Sahamati) for direct bank data
+12. **Rewards tracking** — Credit card reward points from statements
+13. **Encryption at rest** — AES-256 for stored PDFs, encrypted DB columns for sensitive data
+14. **Zero-retention mode** — Delete PDFs after parsing, keep only structured data
+15. **iOS support** — Expo build for iOS (no SMS, but all other features)
+16. **Play Store distribution** — Apply for SMS permission exception or use SMS Retriever API
+17. **Automated backups** — PostgreSQL pg_dump on schedule
+18. **Notification system** — Bill due date reminders, unusual spending alerts
+19. **PWA** — Offline-capable web app with service worker
+20. **Import from other apps** — CSV import from Walnut, Axio, Money Manager
+21. **API rate limiting** — Production hardening
+22. **Audit logging** — Track all data access for compliance
 
 ### Product Direction
 - **Statement-first, not SMS-first** — Statements are the source of truth
@@ -693,4 +771,4 @@ docker compose -f docker-compose.yml -f docker-compose.llm.yml up -d llm  # LLM 
 ## 2026-03-25 Knowledge Transfer Compliance
 - This file is the canonical transfer document for architecture, implemented scope, missing features, and future plans.
 - Memory sync source: `<workspace-root>/personal-helper/memory/`.
-- Llama/QwQ model location and runtime assumptions must be updated here on every change.
+- Shared local LLM model location and runtime assumptions must be updated here on every change.

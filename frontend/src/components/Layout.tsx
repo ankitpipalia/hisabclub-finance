@@ -15,6 +15,7 @@ import {
   LogOut,
   Menu,
   X,
+  UserRound,
 } from 'lucide-react';
 import { api } from '../api/client';
 import ThemeModeSelect from './ThemeModeSelect';
@@ -32,6 +33,7 @@ const navItems = [
 ];
 
 const secondaryItems = [
+  { to: '/account', icon: UserRound, label: 'Account' },
   { to: '/gmail', icon: Mail, label: 'Gmail' },
   { to: '/imports', icon: FolderSearch, label: 'Imports' },
 ];

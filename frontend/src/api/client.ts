@@ -135,21 +135,58 @@ class ApiClient {
     return result;
   }
 
+  async requestPasswordReset(email: string) {
+    return this.request<ForgotPasswordResponse>('/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    return this.request<MessageResponse>('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+  }
+
+  async changePassword(currentPassword: string, newPassword: string) {
+    return this.request<MessageResponse>('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+    });
+  }
+
   async getMe() {
     return this.request<{ id: string; email: string; display_name: string }>('/auth/me');
   }
 
   // Upload
-  async uploadPdf(file: File, password?: string, bankHint?: string, forceReprocess: boolean = false) {
+  async uploadPdf(
+    file: File,
+    password?: string,
+    bankHint?: string,
+    accountTypeHint?: string,
+    forceReprocess: boolean = false,
+  ) {
     const formData = new FormData();
     formData.append('file', file);
     if (password) formData.append('password', password);
     if (bankHint) formData.append('bank_hint', bankHint);
+    if (accountTypeHint && accountTypeHint !== 'auto') {
+      formData.append('account_type_hint', accountTypeHint);
+    }
     if (forceReprocess) formData.append('force_reprocess', 'true');
-    return this.request<{ pdf_id: string; status: string; message: string }>(
+    return this.request<UploadResponse>(
       '/upload/pdf',
       { method: 'POST', body: formData }
     );
+  }
+
+  async getRecentUploads(limit: number = 20) {
+    return this.request<UploadReviewItem[]>(`/upload/recent?limit=${limit}`);
   }
 
   // Statements
@@ -168,6 +205,18 @@ class ApiClient {
 
   async getStatementPdf(statementId: string) {
     return this.requestBlob(`/statements/${statementId}/pdf`);
+  }
+
+  async rereviewStatement(statementId: string) {
+    return this.request<Statement>(`/statements/${statementId}/re-review`, {
+      method: 'POST',
+    });
+  }
+
+  async deleteStatement(statementId: string) {
+    return this.request<MessageResponse>(`/statements/${statementId}`, {
+      method: 'DELETE',
+    });
   }
 
   // Transactions
@@ -394,6 +443,28 @@ export interface Statement {
   is_reprocess: boolean;
   reprocess_count: number;
   created_at: string;
+}
+
+export interface ForgotPasswordResponse {
+  message: string;
+  delivery: string;
+  preview_url: string | null;
+}
+
+export interface UploadReviewItem {
+  pdf_id: string;
+  file_name: string;
+  status: string;
+  message: string;
+  bank_name: string | null;
+  account_type: string | null;
+  parser_used: string | null;
+  transaction_count: number | null;
+  created_at: string | null;
+}
+
+export interface MessageResponse {
+  message: string;
 }
 
 export interface StatementIntegrityResponse {
@@ -682,6 +753,16 @@ export interface ParserSupportQueueItem {
 export interface ParserSupportQueueResponse {
   total: number;
   items: ParserSupportQueueItem[];
+}
+
+export interface UploadResponse {
+  pdf_id: string;
+  document_id?: string | null;
+  status: string;
+  message: string;
+  bank_name?: string | null;
+  account_type?: string | null;
+  parser_used?: string | null;
 }
 
 export const api = new ApiClient();

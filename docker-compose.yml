@@ -4,26 +4,31 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
+    network_mode: host
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://hisabclub:hisabclub_dev@db:5432/hisabclub
-      DATABASE_URL_SYNC: postgresql://hisabclub:hisabclub_dev@db:5432/hisabclub
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://hisabclub:hisabclub_dev@localhost:6543/hisabclub
+      DATABASE_URL_SYNC: postgresql://hisabclub:hisabclub_dev@localhost:6543/hisabclub
+      REDIS_URL: redis://localhost:6769/0
       HOST: 0.0.0.0
-      PORT: 8000
+      PORT: 8356
       UPLOAD_DIR: /app/uploads
+      FRONTEND_DIST_DIR: /app/frontend/dist
+      LLM_BASE_URL: http://localhost:8472/v1
+      LOCAL_ALLOWED_LLM_HOSTS: localhost,127.0.0.1,::1
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8000:8000"
     volumes:
       - ./uploads:/app/uploads
+      - ./frontend/dist:/app/frontend/dist:ro
+      - ${LOCAL_DOCUMENTS_ROOT:-/home/ankit/Documents}:${LOCAL_DOCUMENTS_ROOT:-/home/ankit/Documents}:ro
+      - ${LOCAL_DOWNLOADS_ROOT:-/home/ankit/Downloads}:${LOCAL_DOWNLOADS_ROOT:-/home/ankit/Downloads}:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8356/health"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -36,7 +41,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hisabclub_dev}
       POSTGRES_DB: ${POSTGRES_DB:-hisabclub}
     ports:
-      - "5433:5432"
+      - "6543:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -49,7 +54,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "6380:6379"
+      - "6769:6379"
     volumes:
       - redisdata:/data
     healthcheck:

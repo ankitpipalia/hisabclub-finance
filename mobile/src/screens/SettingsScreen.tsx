@@ -6,18 +6,19 @@ import {
   StyleSheet,
   Alert,
 } from 'react-native';
-import { TextInput, Button, Divider, ActivityIndicator } from 'react-native-paper';
+import { TextInput, Button, Divider, ActivityIndicator, Menu, IconButton } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import * as api from '../api/client';
-import { getServerUrl, setServerUrl } from '../utils/storage';
+import { getServerUrl, isDefaultServerUrl, normalizeServerUrl, resetServerUrl, setServerUrl } from '../utils/storage';
 import type { RootStackParamList } from '../navigation/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import BrandMark from '../components/BrandMark';
 import FadeInView from '../components/FadeInView';
 import AnimatedOrbs from '../components/AnimatedOrbs';
+import { DEFAULT_API_DOMAIN, DEFAULT_API_URL } from '../utils/constants';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -30,6 +31,12 @@ export default function SettingsScreen() {
   const [serverUrl, setServerUrlLocal] = useState('');
   const [savingUrl, setSavingUrl] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
+  const [serverMenuVisible, setServerMenuVisible] = useState(false);
+  const [showCustomServer, setShowCustomServer] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
 
   const meQuery = useQuery({
     queryKey: ['me'],
@@ -38,12 +45,21 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     getServerUrl().then((url) => {
-      if (url) setServerUrlLocal(url);
+      const resolved = url || DEFAULT_API_URL;
+      setServerUrlLocal(resolved);
+      setShowCustomServer(!isDefaultServerUrl(resolved));
     });
   }, []);
 
   const handleSaveUrl = async () => {
-    const trimmed = serverUrl.trim();
+    if (!showCustomServer) {
+      await resetServerUrl();
+      setServerUrlLocal(DEFAULT_API_URL);
+      Alert.alert('Saved', 'Using the default HisabClub domain');
+      return;
+    }
+
+    const trimmed = normalizeServerUrl(serverUrl);
     if (!trimmed) {
       Alert.alert('Error', 'Please enter a server URL');
       return;
@@ -51,6 +67,7 @@ export default function SettingsScreen() {
     setSavingUrl(true);
     try {
       await setServerUrl(trimmed);
+      setServerUrlLocal(trimmed);
       Alert.alert('Saved', 'Server URL updated');
     } catch {
       Alert.alert('Error', 'Failed to save server URL');
@@ -60,9 +77,9 @@ export default function SettingsScreen() {
   };
 
   const handleTestConnection = async () => {
-    if (serverUrl.trim()) {
-      await setServerUrl(serverUrl.trim());
-    }
+    const nextUrl = showCustomServer ? normalizeServerUrl(serverUrl) : DEFAULT_API_URL;
+    await setServerUrl(nextUrl);
+    setServerUrlLocal(nextUrl);
     setTestingConnection(true);
     try {
       const ok = await api.testConnection();
@@ -87,6 +104,34 @@ export default function SettingsScreen() {
         onPress: () => auth.logout(),
       },
     ]);
+  };
+
+  const handleChangePassword = async () => {
+    if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
+      Alert.alert('Error', 'Fill in all password fields');
+      return;
+    }
+    if (newPassword.length < 8) {
+      Alert.alert('Error', 'Password must be at least 8 characters long');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert('Error', 'New passwords do not match');
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const result = await api.changePassword(currentPassword, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      Alert.alert('Password updated', result.message);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not change password');
+    } finally {
+      setChangingPassword(false);
+    }
   };
 
   const user = meQuery.data;
@@ -194,40 +239,89 @@ export default function SettingsScreen() {
       <Divider style={styles.divider} />
 
       <FadeInView delay={130} style={styles.section}>
-        <Text style={styles.sectionTitle}>Server Configuration</Text>
-        <TextInput
-          label="Server URL"
-          value={serverUrl}
-          onChangeText={setServerUrlLocal}
-          mode="outlined"
-          placeholder="https://your-server.com/api/v1"
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-          autoComplete="off"
-          textContentType="none"
-          importantForAutofill="no"
-          style={styles.input}
-          outlineColor={colors.border}
-          activeOutlineColor={colors.primary}
-        />
-        <View style={styles.buttonRow}>
-          <Button
-            mode="contained"
-            onPress={handleSaveUrl}
-            loading={savingUrl}
-            disabled={savingUrl}
-            style={styles.rowButton}
-            buttonColor={colors.primary}
+        <View style={styles.serverHeader}>
+          <Text style={styles.sectionTitle}>Server Configuration</Text>
+          <Menu
+            visible={serverMenuVisible}
+            onDismiss={() => setServerMenuVisible(false)}
+            anchor={(
+              <IconButton
+                icon="dots-vertical"
+                size={18}
+                iconColor={colors.text}
+                onPress={() => setServerMenuVisible(true)}
+                style={styles.serverMenuButton}
+              />
+            )}
+            contentStyle={{ backgroundColor: colors.surface }}
           >
-            Save
-          </Button>
+            <Menu.Item
+              leadingIcon="server-network"
+              onPress={async () => {
+                setServerMenuVisible(false);
+                setShowCustomServer(false);
+                await resetServerUrl();
+                setServerUrlLocal(DEFAULT_API_URL);
+              }}
+              title="Use HisabClub Dev"
+            />
+            <Menu.Item
+              leadingIcon="cog-outline"
+              onPress={() => {
+                setServerMenuVisible(false);
+                setShowCustomServer(true);
+                setServerUrlLocal((current) => normalizeServerUrl(current || DEFAULT_API_URL));
+              }}
+              title="Custom self-hosted domain"
+            />
+          </Menu>
+        </View>
+        {!showCustomServer && (
+          <View style={styles.serverSummary}>
+            <Text style={styles.serverLabel}>Default domain</Text>
+            <Text style={styles.serverValue}>{DEFAULT_API_DOMAIN}</Text>
+            <Text style={styles.sectionDescription}>
+              Open the 3-dot menu to point this app at a custom self-hosted backend.
+            </Text>
+          </View>
+        )}
+        {showCustomServer && (
+          <TextInput
+            label="Server URL"
+            value={serverUrl}
+            onChangeText={setServerUrlLocal}
+            mode="outlined"
+            placeholder="https://your-server.com or https://your-server.com/api/v1"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            autoComplete="off"
+            textContentType="none"
+            importantForAutofill="no"
+            style={styles.input}
+            outlineColor={colors.border}
+            activeOutlineColor={colors.primary}
+          />
+        )}
+        <View style={styles.buttonRow}>
+          {showCustomServer && (
+            <Button
+              mode="contained"
+              onPress={handleSaveUrl}
+              loading={savingUrl}
+              disabled={savingUrl}
+              style={styles.rowButton}
+              buttonColor={colors.primary}
+            >
+              Save
+            </Button>
+          )}
           <Button
             mode="outlined"
             onPress={handleTestConnection}
             loading={testingConnection}
             disabled={testingConnection}
-            style={styles.rowButton}
+            style={showCustomServer ? styles.rowButton : styles.rowButtonFull}
             textColor={colors.primary}
           >
             Test
@@ -273,6 +367,57 @@ export default function SettingsScreen() {
         ) : (
           <Text style={styles.errorText}>Could not load user info</Text>
         )}
+
+        <View style={styles.passwordCard}>
+          <Text style={styles.passwordTitle}>Change Password</Text>
+          <TextInput
+            label="Current Password"
+            value={currentPassword}
+            onChangeText={setCurrentPassword}
+            mode="outlined"
+            secureTextEntry
+            autoComplete="password"
+            textContentType="password"
+            style={styles.input}
+            outlineColor={colors.border}
+            activeOutlineColor={colors.primary}
+          />
+          <TextInput
+            label="New Password"
+            value={newPassword}
+            onChangeText={setNewPassword}
+            mode="outlined"
+            secureTextEntry
+            autoComplete="new-password"
+            textContentType="newPassword"
+            style={styles.input}
+            outlineColor={colors.border}
+            activeOutlineColor={colors.primary}
+          />
+          <TextInput
+            label="Confirm Password"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            mode="outlined"
+            secureTextEntry
+            autoComplete="new-password"
+            textContentType="newPassword"
+            style={styles.input}
+            outlineColor={colors.border}
+            activeOutlineColor={colors.primary}
+          />
+          <Button
+            mode="contained"
+            onPress={handleChangePassword}
+            loading={changingPassword}
+            disabled={changingPassword}
+            style={styles.changePasswordButton}
+            buttonColor={colors.primary}
+            textColor="#FFFFFF"
+          >
+            Update Password
+          </Button>
+        </View>
       </FadeInView>
 
       <Divider style={styles.divider} />
@@ -342,6 +487,34 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1.1,
   },
+  serverHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  serverMenuButton: {
+    margin: -6,
+  },
+  serverSummary: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    padding: 14,
+  },
+  serverLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 1.1,
+  },
+  serverValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginTop: 6,
+    marginBottom: 8,
+  },
   sectionDescription: {
     fontSize: 13,
     color: COLORS.textSecondary,
@@ -366,6 +539,9 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     gap: 12,
   },
   rowButton: {
+    flex: 1,
+  },
+  rowButtonFull: {
     flex: 1,
   },
   divider: {
@@ -401,6 +577,25 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     fontSize: 14,
     color: COLORS.textSecondary,
     fontStyle: 'italic',
+  },
+  passwordCard: {
+    marginTop: 16,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 16,
+  },
+  passwordTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  changePasswordButton: {
+    marginTop: 4,
+    alignSelf: 'flex-start',
   },
   logoutButton: {
     marginTop: 8,

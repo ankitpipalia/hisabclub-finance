@@ -19,6 +19,7 @@ class RawPdf(UUIDPrimaryKeyMixin, Base):
     )  # 'manual_upload' | 'manual_reprocess' | 'email_attachment'
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     file_hash_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    semantic_fingerprint: Mapped[str | None] = mapped_column(String(64))
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_password_protected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

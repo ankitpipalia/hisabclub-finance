@@ -1,14 +1,15 @@
-.PHONY: dev dev-backend dev-frontend migrate seed test lint docker-up docker-down
+.PHONY: dev dev-backend dev-frontend migrate seed backfill-knowledge test lint docker-up docker-down \
+	local-services local-stack local-check android-install android-reverse mobile-dev
 
-VENV = backend/.venv/bin
+VENV = .venv/bin
 
 # Development
 dev:
-	@echo "Starting HisabClub in development mode..."
-	$(MAKE) -j2 dev-backend dev-frontend
+	@echo "Starting HisabClub with backend-served web on :8356..."
+	./scripts/start-local-stack.sh
 
 dev-backend:
-	cd backend && $(VENV)/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	cd backend && $(VENV)/uvicorn app.main:app --reload --host 0.0.0.0 --port 8356
 
 dev-frontend:
 	cd frontend && npm run dev
@@ -22,6 +23,9 @@ migrate-new:
 
 seed:
 	cd backend && $(VENV)/python -m app.seed.run
+
+backfill-knowledge:
+	cd backend && $(VENV)/python -m app.tasks.backfill_document_knowledge
 
 # Testing
 test:
@@ -52,10 +56,29 @@ docker-logs:
 docker-build:
 	docker compose build
 
+# Supported local topology: db/redis in Docker, backend on host, shared LLM in /home/ankit/Documents/local-llm
+local-services:
+	docker compose up -d db redis
+
+local-stack:
+	./scripts/start-local-stack.sh
+
+local-check:
+	./scripts/check-local-stack.sh
+
+android-install:
+	./scripts/install-mobile-debug.sh
+
+android-reverse:
+	./scripts/android-reverse.sh
+
+mobile-dev:
+	./scripts/start-mobile-dev.sh
+
 # Setup
 setup:
 	cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 	cd frontend && npm install
 	cp -n .env.example .env || true
 	mkdir -p uploads
-	@echo "Setup complete! Run 'make docker-up' to start PostgreSQL and Redis, then 'make migrate' and 'make dev'"
+	@echo "Setup complete. Use 'make local-stack' for the supported host-backend workflow."

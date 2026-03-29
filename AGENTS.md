@@ -5,13 +5,13 @@ This repository is a monorepo with three apps:
 - `backend/`: FastAPI service. Core code is in `app/` (`api/v1`, `models`, `schemas`, `engines`), migrations in `alembic/`, and tests in `tests/`.
 - `frontend/`: Vite + React + TypeScript web app. Main folders are `src/pages`, `src/components`, and `src/api`.
 - `mobile/`: Expo React Native app. Main folders are `src/screens`, `src/navigation`, `src/sms`, and `src/api`.
-- Root-level infra and runtime files include `docker-compose.yml`, `docker-compose.llm.yml`, `uploads/`, and `models/`.
+- Root-level infra and runtime files include `docker-compose.yml`, `uploads/`, and `knowledge.md`. Shared LLM assets live outside this repo under `/home/ankit/Documents/local-llm`.
 
 ## Build, Test, and Development Commands
 - `make setup`: create backend virtualenv, install backend/frontend dependencies, and initialize local files.
 - `make docker-up` / `make docker-down`: start/stop Postgres + Redis.
 - `make migrate`: apply Alembic migrations.
-- `make dev`: run backend (`:8000`) and frontend (`:5173`) together.
+- `make dev`: run backend (`:8356`) and frontend (`:5276`) together.
 - `make test` / `make test-cov`: run backend pytest suite and optional coverage HTML output.
 - `make lint` / `make format`: run Ruff checks/formatting for backend.
 - `cd frontend && npm run build`: production web build.
@@ -35,5 +35,5 @@ This repository is a monorepo with three apps:
 
 ## Security & Configuration Tips
 - Do not commit `.env` or secrets. Start from `.env.example`.
-- Docker local defaults are Postgres `5433` and Redis `6380`; keep `DATABASE_URL*` and `REDIS_URL` aligned.
-- LLM support is optional; enable with `LLM_ENABLED=true` and run `./start-llm.sh` only when needed.
+- Docker local defaults are Postgres `6543` and Redis `6769`; keep `DATABASE_URL*` and `REDIS_URL` aligned.
+- LLM support is optional; enable with `LLM_ENABLED=true` and start the shared server with `/home/ankit/Documents/local-llm/llama-turbo-cuda.sh start`.

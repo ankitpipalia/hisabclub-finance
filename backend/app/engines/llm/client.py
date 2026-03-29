@@ -55,6 +55,10 @@ class LLMClient:
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            # Qwen3.5 on llama.cpp emits reasoning_content by default. Disable
+            # thinking mode so downstream finance prompts receive a final answer
+            # in message.content.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
 
         safe_attempts = max(1, max_attempts)
@@ -69,9 +73,6 @@ class LLMClient:
                     if choices:
                         msg = choices[0]["message"]
                         content = msg.get("content") or ""
-                        # For reasoning models (e.g. QWQ), the actual answer
-                        # may be in "content" while chain-of-thought is in
-                        # "reasoning_content". We return only "content".
                         return content.strip()
                     logger.warning("LLM returned no choices: %s", data)
                     return ""

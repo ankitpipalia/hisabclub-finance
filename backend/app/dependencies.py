@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
+from app.security.tenant_context import set_request_user_context
 
 security = HTTPBearer()
 
@@ -33,6 +34,7 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    await set_request_user_context(db, user_id=user.id)
     return user
 
 

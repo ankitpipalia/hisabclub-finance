@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from sqlalchemy import select
 
 from app.dependencies import CurrentUser, DbSession
+from app.engines.ledger.fingerprint import build_transaction_dedupe_fingerprint
 from app.engines.ledger.merger import promote_to_canonical
 from app.models.parsed_transaction import ParsedTransaction
 from app.models.raw_sms import RawSms
@@ -79,6 +80,13 @@ async def sms_batch_import(
                 upi_id=item.upi_id,
                 confidence=item.confidence,
                 extraction_method="sms_regex",
+                dedupe_fingerprint=build_transaction_dedupe_fingerprint(
+                    user_id=user.id,
+                    account_masked=item.account_masked,
+                    transaction_date=item.sms_timestamp.date(),
+                    amount=item.amount or 0,
+                    description=item.description or item.body,
+                ),
             )
             db.add(parsed_txn)
             await db.flush()

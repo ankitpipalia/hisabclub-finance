@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.dependencies import CurrentUser, DbSession
 from app.engines.gmail.service import GmailService
 from app.models.connected_account import ConnectedAccount
+from app.models.institution_password_pattern import InstitutionPasswordPattern
+from app.security.tenant_context import set_request_user_context
 
 router = APIRouter()
 gmail_service = GmailService()
@@ -38,6 +41,25 @@ class AllowlistResponse(BaseModel):
     account_id: str
     provider_email: str | None
     senders: list[str]
+
+
+class PasswordPatternUpsert(BaseModel):
+    bank_code: str
+    account_scope: Literal["credit_card", "bank_account", "any"] = "any"
+    pattern_type: Literal["template", "static_password"] = "template"
+    pattern_template: str
+    variables: dict[str, str] | None = None
+    is_active: bool = True
+
+
+class PasswordPatternResponse(BaseModel):
+    id: str
+    bank_code: str
+    account_scope: str
+    pattern_type: str
+    pattern_template: str
+    variables: dict[str, str] | None = None
+    is_active: bool
 
 
 # ─── Routes ───────────────────────────────────────────
@@ -75,6 +97,7 @@ async def gmail_callback(
         )
 
     try:
+        await set_request_user_context(db, user_id=user_id)
         account = await gmail_service.handle_callback(db, user_id, code)
         return {
             "status": "connected",
@@ -186,3 +209,103 @@ async def update_allowlist(
         provider_email=updated.provider_email,
         senders=updated.sender_allowlist or [],
     )
+
+
+@router.get("/password-patterns", response_model=list[PasswordPatternResponse])
+async def list_password_patterns(db: DbSession, user: CurrentUser):
+    rows = (
+        await db.execute(
+            select(InstitutionPasswordPattern)
+            .where(InstitutionPasswordPattern.user_id == user.id)
+            .order_by(
+                InstitutionPasswordPattern.bank_code.asc(),
+                InstitutionPasswordPattern.account_scope.asc(),
+            )
+        )
+    ).scalars().all()
+    return [
+        PasswordPatternResponse(
+            id=str(row.id),
+            bank_code=row.bank_code,
+            account_scope=row.account_scope,
+            pattern_type=row.pattern_type,
+            pattern_template=row.pattern_template,
+            variables=row.variables_json,
+            is_active=row.is_active,
+        )
+        for row in rows
+    ]
+
+
+@router.put("/password-patterns", response_model=PasswordPatternResponse)
+async def upsert_password_pattern(
+    body: PasswordPatternUpsert,
+    db: DbSession,
+    user: CurrentUser,
+):
+    bank_code = body.bank_code.strip().upper()
+    if not bank_code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="bank_code is required")
+    if len(body.pattern_template.strip()) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="pattern_template must be at least 2 characters",
+        )
+
+    existing = (
+        await db.execute(
+            select(InstitutionPasswordPattern).where(
+                InstitutionPasswordPattern.user_id == user.id,
+                InstitutionPasswordPattern.bank_code == bank_code,
+                InstitutionPasswordPattern.account_scope == body.account_scope,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = InstitutionPasswordPattern(
+            user_id=user.id,
+            bank_code=bank_code,
+            account_scope=body.account_scope,
+            pattern_type=body.pattern_type,
+            pattern_template=body.pattern_template.strip(),
+            variables_json=body.variables or {},
+            is_active=body.is_active,
+        )
+        db.add(existing)
+    else:
+        existing.pattern_type = body.pattern_type
+        existing.pattern_template = body.pattern_template.strip()
+        existing.variables_json = body.variables or {}
+        existing.is_active = body.is_active
+
+    await db.flush()
+    return PasswordPatternResponse(
+        id=str(existing.id),
+        bank_code=existing.bank_code,
+        account_scope=existing.account_scope,
+        pattern_type=existing.pattern_type,
+        pattern_template=existing.pattern_template,
+        variables=existing.variables_json,
+        is_active=existing.is_active,
+    )
+
+
+@router.delete("/password-patterns/{pattern_id}", response_model=dict[str, str])
+async def delete_password_pattern(pattern_id: str, db: DbSession, user: CurrentUser):
+    try:
+        pattern_uuid = uuid.UUID(pattern_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pattern_id")
+
+    result = await db.execute(
+        delete(InstitutionPasswordPattern)
+        .where(
+            InstitutionPasswordPattern.id == pattern_uuid,
+            InstitutionPasswordPattern.user_id == user.id,
+        )
+        .returning(InstitutionPasswordPattern.id)
+    )
+    deleted = result.scalar_one_or_none()
+    if deleted is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pattern not found")
+    return {"message": "Password pattern deleted"}
