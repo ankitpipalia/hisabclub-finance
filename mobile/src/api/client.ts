@@ -139,6 +139,22 @@ export async function changePassword(currentPassword: string, newPassword: strin
   });
 }
 
+export async function clearMyData(currentPassword: string, confirmation: string) {
+  return request<{
+    message: string;
+    deleted_rows: Record<string, number>;
+    deleted_files: number;
+    deleted_directories: number;
+    file_delete_errors: number;
+  }>('/auth/clear-data', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      confirmation,
+    }),
+  });
+}
+
 export async function getMe() {
   return request<{ id: string; email: string; display_name: string }>('/auth/me');
 }
@@ -150,6 +166,7 @@ export async function uploadPdf(
   password?: string,
   bankHint?: string,
   accountTypeHint?: string,
+  documentTypeHint?: string,
   forceReprocess: boolean = false,
 ) {
   const formData = new FormData();
@@ -162,6 +179,9 @@ export async function uploadPdf(
   if (bankHint) formData.append('bank_hint', bankHint);
   if (accountTypeHint && accountTypeHint !== 'auto') {
     formData.append('account_type_hint', accountTypeHint);
+  }
+  if (documentTypeHint && documentTypeHint !== 'auto') {
+    formData.append('document_type_hint', documentTypeHint);
   }
   if (forceReprocess) formData.append('force_reprocess', 'true');
 
@@ -191,6 +211,32 @@ export async function getRecentUploads(limit: number = 20) {
     transaction_count?: number | null;
     created_at?: string | null;
   }>>(`/upload/recent?limit=${limit}`);
+}
+
+export interface FolderImportRequest {
+  folder_path: string;
+  parse_supported?: boolean;
+  dry_run?: boolean;
+  force_reprocess?: boolean;
+  max_files?: number;
+  password_map?: Record<string, string>;
+}
+
+export interface FolderImportResponse {
+  discovered: number;
+  ingested: number;
+  parsed: number;
+  skipped: number;
+  failed: number;
+  by_doc_type: Record<string, number>;
+  messages: string[];
+}
+
+export async function importFolder(data: FolderImportRequest) {
+  return request<FolderImportResponse>('/imports/folder', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 }
 
 // Statements

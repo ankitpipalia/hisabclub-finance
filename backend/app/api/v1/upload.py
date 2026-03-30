@@ -1,12 +1,16 @@
 import hashlib
+import json
 import os
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import delete, desc, select
 
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
+from app.engines.intake.doc_classifier import classify_uploaded_pdf
+from app.engines.intake.tax_document_parser import extract_tax_document_metadata
 from app.engines.jobs.service import enqueue_parse_job, list_dlq_jobs, requeue_dlq_job
 from app.engines.llm.knowledge import ingest_pdf_knowledge
 from app.engines.parser.base import StatementDuplicateError
@@ -14,12 +18,15 @@ from app.engines.parser.hints import normalize_parser_hints
 from app.engines.parser.password_patterns import resolve_pdf_password
 from app.engines.parser.pdf_utils import decrypt_pdf
 from app.engines.parser.pdf_utils import extract_text as extract_pdf_text
+from app.models.document_artifact import DocumentArtifact
 from app.models.document_knowledge_chunk import DocumentKnowledgeChunk
 from app.models.extraction_job import ExtractionJob
 from app.models.institution_parser_support import InstitutionParserSupport
 from app.models.raw_pdf import RawPdf
 from app.models.statement import Statement
 from app.schemas.upload import (
+    BulkUploadResponse,
+    BulkUploadResultItem,
     ExtractionJobResponse,
     ParserHealthItemResponse,
     UploadResponse,
@@ -29,6 +36,8 @@ from app.schemas.upload import (
 from app.security.crypto import encrypt_text
 
 router = APIRouter()
+
+_STATEMENT_DOC_TYPES = {"bank_statement", "credit_card_statement"}
 
 
 def _map_statement_parse_status_to_review_status(parse_status: str | None) -> str:
@@ -94,6 +103,122 @@ def _to_extraction_job_response(job: ExtractionJob) -> ExtractionJobResponse:
         created_at=job.created_at,
         next_run_at=job.next_run_at,
         finished_at=job.finished_at,
+    )
+
+
+async def _register_non_statement_pdf(
+    *,
+    db: DbSession,
+    user_id: uuid.UUID,
+    content: bytes,
+    file_name: str,
+    file_size: int,
+    file_hash: str,
+    encrypted: bool,
+    password: str | None,
+    bank_hint: str | None,
+    account_type_hint: str | None,
+    doc_type: str,
+    force_reprocess: bool,
+    extracted_text: str | None,
+) -> UploadResponse:
+    existing = (
+        await db.execute(
+            select(DocumentArtifact)
+            .where(
+                DocumentArtifact.user_id == user_id,
+                DocumentArtifact.file_hash_sha256 == file_hash,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None and not force_reprocess:
+        return UploadResponse(
+            pdf_id=str(existing.id),
+            document_id=str(existing.id),
+            status="duplicate",
+            message=(
+                "This document has already been uploaded. "
+                "Enable reprocess to register it again."
+            ),
+            bank_name=bank_hint,
+            account_type=doc_type,
+        )
+
+    storage_dir = os.path.join(settings.upload_dir, str(user_id), "artifacts")
+    os.makedirs(storage_dir, exist_ok=True)
+    artifact_id = existing.id if existing is not None else uuid.uuid4()
+    storage_path = os.path.join(storage_dir, f"{artifact_id}.pdf")
+    with open(storage_path, "wb") as out:
+        out.write(content)
+
+    metadata = extract_tax_document_metadata(
+        doc_type=doc_type,
+        text=extracted_text or "",
+        source_filename=file_name,
+    )
+    if bank_hint:
+        metadata["bank_hint"] = bank_hint
+    if account_type_hint:
+        metadata["account_type_hint"] = account_type_hint
+
+    if existing is None:
+        artifact = DocumentArtifact(
+            id=artifact_id,
+            user_id=user_id,
+            file_path=storage_path,
+            file_name=file_name,
+            file_ext="pdf",
+            file_hash_sha256=file_hash,
+            file_size_bytes=file_size,
+            doc_type=doc_type,
+            bank_hint=bank_hint,
+            status="parsed",
+            parse_message=f"Registered {doc_type} document for tax assessment.",
+            metadata_json=metadata,
+            processed_at=datetime.now(timezone.utc),
+        )
+        db.add(artifact)
+    else:
+        artifact = existing
+        artifact.file_path = storage_path
+        artifact.file_name = file_name
+        artifact.file_ext = "pdf"
+        artifact.file_size_bytes = file_size
+        artifact.doc_type = doc_type
+        artifact.bank_hint = bank_hint
+        artifact.status = "parsed"
+        artifact.parse_message = f"Registered {doc_type} document for tax assessment."
+        artifact.metadata_json = metadata
+        artifact.processed_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    try:
+        await ingest_pdf_knowledge(
+            db=db,
+            user_id=user_id,
+            pdf_content=content,
+            password=password,
+            source_filename=file_name,
+            source_kind="artifact",
+            artifact_id=artifact.id,
+            bank_hint=bank_hint,
+            account_type_hint=account_type_hint,
+            doc_type=doc_type,
+        )
+    except Exception:
+        pass
+
+    return UploadResponse(
+        pdf_id=str(artifact.id),
+        document_id=str(artifact.id),
+        status="success",
+        message=(
+            "Document registered for tax assessment. "
+            "It will be linked in your new-regime tax view."
+        ),
+        bank_name=bank_hint,
+        account_type=doc_type,
     )
 
 
@@ -208,6 +333,46 @@ async def list_recent_uploads(user: CurrentUser, db: DbSession, limit: int = 20)
                 created_at=pdf.ingested_at.isoformat(),
             )
         )
+
+    artifacts = (
+        await db.execute(
+            select(DocumentArtifact)
+            .where(DocumentArtifact.user_id == user.id)
+            .where(DocumentArtifact.doc_type.notin_(_STATEMENT_DOC_TYPES))
+            .order_by(desc(DocumentArtifact.discovered_at))
+            .limit(safe_limit)
+        )
+    ).scalars().all()
+    for artifact in artifacts:
+        normalized_status = (artifact.status or "").lower()
+        if normalized_status == "parsed":
+            status_value = "success"
+        elif normalized_status in {"failed"}:
+            status_value = "failed"
+        elif normalized_status in {"discovered"}:
+            status_value = "reviewing"
+        else:
+            status_value = "error"
+        items.append(
+            UploadReviewItemResponse(
+                pdf_id=str(artifact.id),
+                document_id=str(artifact.id),
+                file_name=artifact.file_name,
+                status=status_value,
+                message=artifact.parse_message or "Document registered for tax assessment.",
+                bank_name=artifact.bank_hint,
+                account_type=artifact.doc_type,
+                created_at=(
+                    artifact.processed_at.isoformat()
+                    if artifact.processed_at
+                    else artifact.discovered_at.isoformat()
+                ),
+            )
+        )
+
+    items.sort(key=lambda item: item.created_at or "", reverse=True)
+    if len(items) > safe_limit:
+        return items[:safe_limit]
     return items
 
 
@@ -219,9 +384,21 @@ async def upload_pdf(
     password: str | None = Form(None),
     bank_hint: str | None = Form(None),
     account_type_hint: str | None = Form(None),
+    document_type_hint: str | None = Form(None),
     force_reprocess: bool = Form(False),
 ):
-    """Upload a PDF statement for parsing."""
+    """Upload a PDF document (statement or tax-supporting doc)."""
+    if not isinstance(password, str):
+        password = None
+    if not isinstance(bank_hint, str):
+        bank_hint = None
+    if not isinstance(account_type_hint, str):
+        account_type_hint = None
+    if not isinstance(document_type_hint, str):
+        document_type_hint = None
+    if not isinstance(force_reprocess, bool):
+        force_reprocess = False
+
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -272,8 +449,58 @@ async def upload_pdf(
             ),
         )
 
+    extracted_text = ""
+    try:
+        classification_bytes = decrypt_pdf(content, resolved_password)
+        classification_pages = extract_pdf_text(classification_bytes)
+        extracted_text = "\n".join(classification_pages)
+    except Exception:
+        extracted_text = ""
+
+    legacy_statement_mode = document_type_hint is None
+    resolved_bank_hint = hints.bank_hint
+    resolved_account_type_hint = hints.account_type_hint
+    if legacy_statement_mode:
+        doc_type = (
+            "credit_card_statement"
+            if hints.account_type_hint == "credit_card"
+            else "bank_statement"
+        )
+    else:
+        classified = classify_uploaded_pdf(
+            filename=file.filename,
+            extracted_text=extracted_text,
+            bank_hint=hints.bank_hint,
+            account_type_hint=hints.account_type_hint,
+            document_type_hint=document_type_hint,
+        )
+        doc_type = classified.doc_type
+        resolved_bank_hint = resolved_bank_hint or classified.bank_hint
+        if resolved_account_type_hint is None:
+            if doc_type == "credit_card_statement":
+                resolved_account_type_hint = "credit_card"
+            elif doc_type == "bank_statement":
+                resolved_account_type_hint = "bank_account"
+
     # Hash for dedup
     file_hash = hashlib.sha256(content).hexdigest()
+
+    if doc_type not in _STATEMENT_DOC_TYPES:
+        return await _register_non_statement_pdf(
+            db=db,
+            user_id=user.id,
+            content=content,
+            file_name=file.filename,
+            file_size=file_size,
+            file_hash=file_hash,
+            encrypted=password_resolution.encrypted,
+            password=resolved_password,
+            bank_hint=resolved_bank_hint,
+            account_type_hint=resolved_account_type_hint,
+            doc_type=doc_type,
+            force_reprocess=force_reprocess,
+            extracted_text=extracted_text,
+        )
 
     # Check for duplicate. `limit(1)` avoids MultipleResultsFound when reprocess
     # creates more than one row for the same hash.
@@ -287,10 +514,7 @@ async def upload_pdf(
     if existing_pdf_id is not None and not force_reprocess:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "This PDF has already been uploaded. "
-                "Enable reprocess to parse it again."
-            ),
+            detail="This PDF has already been uploaded. Enable reprocess to parse it again.",
         )
 
     # Save file to disk
@@ -336,21 +560,17 @@ async def upload_pdf(
             source_filename=file.filename,
             source_kind="raw_pdf",
             raw_pdf_id=pdf_id,
-            bank_hint=hints.bank_hint,
-            account_type_hint=hints.account_type_hint,
-            doc_type=(
-                "credit_card_statement"
-                if hints.account_type_hint == "credit_card"
-                else "bank_statement"
-            ),
+            bank_hint=resolved_bank_hint,
+            account_type_hint=resolved_account_type_hint,
+            doc_type=doc_type,
         )
     except Exception:
         pass  # Knowledge ingest is best-effort; parsing should still continue.
 
     try:
         payload: dict[str, str | bool] = {
-            "bank_hint": hints.bank_hint or "",
-            "account_type_hint": hints.account_type_hint or "",
+            "bank_hint": resolved_bank_hint or "",
+            "account_type_hint": resolved_account_type_hint or "",
             "allow_semantic_duplicate": is_reprocess,
         }
         if resolved_password:
@@ -370,8 +590,8 @@ async def upload_pdf(
                 "Document is under review by the local LLM. Please wait. "
                 "We will notify you once it completes."
             ),
-            bank_name=hints.bank_hint,
-            account_type=hints.account_type_hint,
+            bank_name=resolved_bank_hint,
+            account_type=resolved_account_type_hint,
         )
     except StatementDuplicateError as e:
         # Cleanup transient duplicate artifact so it does not remain stuck as uploaded.
@@ -397,8 +617,8 @@ async def upload_pdf(
             document_id=str(pdf_id),
             status="duplicate",
             message=str(e),
-            bank_name=hints.bank_hint,
-            account_type=hints.account_type_hint,
+            bank_name=resolved_bank_hint,
+            account_type=resolved_account_type_hint,
         )
     except Exception as e:
         return UploadResponse(
@@ -406,9 +626,117 @@ async def upload_pdf(
             document_id=str(pdf_id),
             status="failed",
             message=str(e),
-            bank_name=hints.bank_hint,
-            account_type=hints.account_type_hint,
+            bank_name=resolved_bank_hint,
+            account_type=resolved_account_type_hint,
         )
+
+
+@router.post("/pdfs", response_model=BulkUploadResponse)
+async def upload_pdfs(
+    user: CurrentUser,
+    db: DbSession,
+    files: list[UploadFile] = File(...),
+    items_json: str | None = Form(None),
+    password: str | None = Form(None),
+    bank_hint: str | None = Form(None),
+    account_type_hint: str | None = Form(None),
+    document_type_hint: str | None = Form(None),
+    force_reprocess: bool = Form(False),
+):
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one PDF file is required.",
+        )
+
+    per_file_items: list[dict] = []
+    if items_json:
+        try:
+            parsed = json.loads(items_json)
+            if isinstance(parsed, list):
+                per_file_items = [item for item in parsed if isinstance(item, dict)]
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="items_json must be a valid JSON array.",
+            ) from exc
+
+    results: list[BulkUploadResultItem] = []
+    success_count = 0
+    reviewing_count = 0
+    failed_count = 0
+    duplicate_count = 0
+
+    def _optional_str(value: object | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    for idx, uploaded_file in enumerate(files):
+        item = per_file_items[idx] if idx < len(per_file_items) else {}
+        file_name = uploaded_file.filename or f"file-{idx + 1}.pdf"
+        try:
+            response = await upload_pdf(
+                user=user,
+                db=db,
+                file=uploaded_file,
+                password=_optional_str(item.get("password")) or password,
+                bank_hint=_optional_str(item.get("bank_hint")) or bank_hint,
+                account_type_hint=(
+                    _optional_str(item.get("account_type_hint")) or account_type_hint
+                ),
+                document_type_hint=(
+                    _optional_str(item.get("document_type_hint")) or document_type_hint
+                ),
+                force_reprocess=bool(item.get("force_reprocess", force_reprocess)),
+            )
+        except HTTPException as exc:
+            detail = str(exc.detail or "Upload failed.")
+            status_value = "duplicate" if exc.status_code == status.HTTP_409_CONFLICT else "failed"
+            response = UploadResponse(
+                pdf_id=str(uuid.uuid4()),
+                document_id=None,
+                status=status_value,
+                message=detail,
+            )
+
+        if response.status in {"success", "parsed"}:
+            success_count += 1
+        elif response.status in {
+            "reviewing",
+            "uploaded",
+            "queued",
+            "classifying",
+            "extracting",
+            "validating",
+        }:
+            reviewing_count += 1
+        elif response.status == "duplicate":
+            duplicate_count += 1
+        else:
+            failed_count += 1
+
+        results.append(
+            BulkUploadResultItem(
+                file_name=file_name,
+                pdf_id=response.pdf_id,
+                document_id=response.document_id,
+                status=response.status,
+                message=response.message,
+                bank_name=response.bank_name,
+                account_type=response.account_type,
+            )
+        )
+
+    return BulkUploadResponse(
+        total=len(results),
+        success_count=success_count,
+        reviewing_count=reviewing_count,
+        duplicate_count=duplicate_count,
+        failed_count=failed_count,
+        items=results,
+    )
 
 
 @router.get("/{pdf_id}/status", response_model=UploadStatusResponse)

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.canonical_transaction import CanonicalTransaction
 from app.models.category import Category
 from app.models.document_artifact import DocumentArtifact
+from app.models.statement import Statement
 
 _CASH_KEYWORDS = ("ATM", "CASH", "WITHDRAWAL")
 _TAX_DOC_TYPES = (
@@ -18,6 +19,7 @@ _TAX_DOC_TYPES = (
     "demat_tax_report",
     "dividend_report",
     "fd_report",
+    "ppf_statement",
 )
 
 _NEW_REGIME_CONFIG_BY_FY_START = {
@@ -69,6 +71,10 @@ def build_tax_action_items(
     coverage: dict[str, int],
     unresolved_statement_docs: int,
     high_value_cash_expense_count: int,
+    *,
+    savings_account_count: int | None = None,
+    documented_interest_income: float | None = None,
+    documented_tax_payments: float | None = None,
 ) -> list[dict]:
     items: list[dict] = []
     if coverage.get("tax_form", 0) == 0:
@@ -128,6 +134,43 @@ def build_tax_action_items(
                 ),
             }
         )
+    if savings_account_count is not None and savings_account_count == 0:
+        items.append(
+            {
+                "severity": "warning",
+                "title": "No Savings Statements Linked",
+                "detail": (
+                    "No savings/current account statements were detected. "
+                    "Upload at least one bank account statement for accurate tax mapping."
+                ),
+            }
+        )
+    if documented_interest_income is not None and totals.get("interest_income", 0.0) > 0:
+        gap = abs(totals.get("interest_income", 0.0) - documented_interest_income)
+        if gap >= 5000:
+            items.append(
+                {
+                    "severity": "warning",
+                    "title": "Interest Income Mismatch",
+                    "detail": (
+                        "Ledger interest and uploaded certificates differ materially. "
+                        f"Current gap is INR {gap:,.0f}."
+                    ),
+                }
+            )
+    if documented_tax_payments is not None and totals.get("tax_payments", 0.0) > 0:
+        gap = abs(totals.get("tax_payments", 0.0) - documented_tax_payments)
+        if gap >= 1000:
+            items.append(
+                {
+                    "severity": "warning",
+                    "title": "Tax Payment Documentation Gap",
+                    "detail": (
+                        "Ledger tax payments and challan documents are not fully aligned. "
+                        f"Current gap is INR {gap:,.0f}."
+                    ),
+                }
+            )
     if unresolved_statement_docs > 0:
         items.append(
             {
@@ -209,6 +252,47 @@ def _calculate_new_regime_tax(
     }
 
 
+def _to_float(value: object | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _account_key(bank_name: str | None, account_masked: str | None) -> tuple[str, str]:
+    bank = (bank_name or "UNKNOWN").strip().upper()
+    account = (account_masked or "UNKNOWN").strip().upper()
+    return bank, account
+
+
+def _build_linkage_check(
+    *,
+    check: str,
+    ledger_amount: float,
+    document_amount: float,
+    threshold: float,
+    detail: str,
+) -> dict:
+    gap = round(ledger_amount - document_amount, 2)
+    abs_gap = abs(gap)
+    if ledger_amount == 0 and document_amount == 0:
+        status = "no_data"
+    elif abs_gap <= threshold:
+        status = "matched"
+    else:
+        status = "review_required"
+    return {
+        "check": check,
+        "status": status,
+        "ledger_amount": round(ledger_amount, 2),
+        "document_amount": round(document_amount, 2),
+        "gap": gap,
+        "detail": detail,
+    }
+
+
 async def build_tax_compliance_report(
     db: AsyncSession,
     user_id: uuid.UUID,
@@ -246,8 +330,18 @@ async def build_tax_compliance_report(
         "new_regime_total_tax": 0.0,
         "new_regime_rebate_threshold": 0.0,
         "tax_due_or_refund": 0.0,
+        "documented_interest_income": 0.0,
+        "documented_interest_tds": 0.0,
+        "documented_tax_payments": 0.0,
+        "documented_fd_principal": 0.0,
+        "documented_fd_interest": 0.0,
+        "documented_ppf_contribution": 0.0,
+        "documented_ppf_interest": 0.0,
+        "documented_ppf_closing_balance": 0.0,
+        "savings_account_count": 0.0,
     }
     high_value_cash_expenses: list[dict] = []
+    interest_income_by_account: dict[tuple[str, str], float] = {}
 
     for txn, _category_name in rows:
         amount = float(txn.amount)
@@ -258,6 +352,11 @@ async def build_tax_compliance_report(
             totals["total_income"] += amount
             if nature == "interest_income":
                 totals["interest_income"] += amount
+                if (txn.account_type or "").lower() in {"savings", "current", "bank_account"}:
+                    key = _account_key(txn.bank_name, txn.account_masked)
+                    interest_income_by_account[key] = (
+                        interest_income_by_account.get(key, 0.0) + amount
+                    )
             elif nature == "dividend_income":
                 totals["dividend_income"] += amount
             elif "SALARY" in merchant or "PAYROLL" in merchant:
@@ -300,6 +399,78 @@ async def build_tax_compliance_report(
     coverage = {doc_type: int(count) for doc_type, count in coverage_rows}
     for doc_type in _TAX_DOC_TYPES:
         coverage.setdefault(doc_type, 0)
+
+    savings_account_rows = (
+        await db.execute(
+            select(
+                Statement.bank_name,
+                Statement.account_number_masked,
+                func.count(Statement.id).label("statement_count"),
+            )
+            .where(Statement.user_id == user_id)
+            .where(Statement.account_type.in_(("savings", "current")))
+            .group_by(Statement.bank_name, Statement.account_number_masked)
+        )
+    ).all()
+    savings_accounts: list[dict] = []
+    seen_account_keys: set[tuple[str, str]] = set()
+    for bank_name, account_masked, statement_count in savings_account_rows:
+        key = _account_key(bank_name, account_masked)
+        seen_account_keys.add(key)
+        savings_accounts.append(
+            {
+                "bank_name": bank_name or "UNKNOWN",
+                "account_masked": account_masked,
+                "statement_count": int(statement_count or 0),
+                "interest_income": round(interest_income_by_account.get(key, 0.0), 2),
+            }
+        )
+    for key, interest_amount in interest_income_by_account.items():
+        if key in seen_account_keys:
+            continue
+        savings_accounts.append(
+            {
+                "bank_name": key[0],
+                "account_masked": None if key[1] == "UNKNOWN" else key[1],
+                "statement_count": 0,
+                "interest_income": round(interest_amount, 2),
+            }
+        )
+    savings_accounts.sort(
+        key=lambda item: (
+            item["bank_name"] or "",
+            item["account_masked"] or "",
+        )
+    )
+    totals["savings_account_count"] = float(len(savings_accounts))
+
+    artifact_rows = (
+        await db.execute(
+            select(DocumentArtifact)
+            .where(DocumentArtifact.user_id == user_id)
+            .where(DocumentArtifact.doc_type.in_(_TAX_DOC_TYPES))
+            .where(DocumentArtifact.status.in_(("parsed", "skipped", "discovered")))
+        )
+    ).scalars().all()
+    challan_count = 0
+    for artifact in artifact_rows:
+        metadata = artifact.metadata_json or {}
+        doc_type = (artifact.doc_type or "").lower()
+        if doc_type == "interest_certificate":
+            totals["documented_interest_income"] += _to_float(metadata.get("interest_amount"))
+            totals["documented_interest_tds"] += _to_float(metadata.get("tds_amount"))
+        elif doc_type == "fd_report":
+            totals["documented_fd_principal"] += _to_float(metadata.get("principal_total"))
+            totals["documented_fd_interest"] += _to_float(metadata.get("interest_total"))
+        elif doc_type == "tax_challan":
+            amount = _to_float(metadata.get("tax_paid_amount"))
+            if amount > 0:
+                challan_count += 1
+            totals["documented_tax_payments"] += amount
+        elif doc_type == "ppf_statement":
+            totals["documented_ppf_contribution"] += _to_float(metadata.get("contribution_amount"))
+            totals["documented_ppf_interest"] += _to_float(metadata.get("interest_amount"))
+            totals["documented_ppf_closing_balance"] += _to_float(metadata.get("closing_balance"))
 
     unresolved_statement_docs = int(
         (
@@ -344,12 +515,41 @@ async def build_tax_compliance_report(
     for key in list(totals.keys()):
         totals[key] = round(totals[key], 2)
 
+    linkage_checks = [
+        _build_linkage_check(
+            check="interest_income_vs_certificates",
+            ledger_amount=totals["interest_income"],
+            document_amount=totals["documented_interest_income"],
+            threshold=500.0,
+            detail="Compares ledger interest credits against uploaded interest/PPF/FD evidence.",
+        ),
+        _build_linkage_check(
+            check="tax_payments_vs_challans",
+            ledger_amount=totals["tax_payments"],
+            document_amount=totals["documented_tax_payments"],
+            threshold=500.0,
+            detail="Compares ledger tax outflows against income-tax challans and acknowledgements.",
+        ),
+        _build_linkage_check(
+            check="investment_outflow_vs_ppf_fd",
+            ledger_amount=totals["investment_outflow"],
+            document_amount=(
+                totals["documented_fd_principal"] + totals["documented_ppf_contribution"]
+            ),
+            threshold=2000.0,
+            detail="Compares investment debits against FD principal and PPF contributions.",
+        ),
+    ]
+
     high_value_cash_expenses.sort(key=lambda x: x["amount"], reverse=True)
     action_items = build_tax_action_items(
         totals=totals,
         coverage=coverage,
         unresolved_statement_docs=unresolved_statement_docs,
         high_value_cash_expense_count=len(high_value_cash_expenses),
+        savings_account_count=int(totals["savings_account_count"]),
+        documented_interest_income=totals["documented_interest_income"],
+        documented_tax_payments=totals["documented_tax_payments"],
     )
 
     return {
@@ -361,10 +561,30 @@ async def build_tax_compliance_report(
         "document_coverage": coverage,
         "unresolved_statement_docs": unresolved_statement_docs,
         "high_value_cash_expenses": high_value_cash_expenses[:20],
+        "savings_accounts": savings_accounts,
+        "linkage_checks": linkage_checks,
+        "document_amounts": {
+            "interest_income": totals["documented_interest_income"],
+            "interest_tds": totals["documented_interest_tds"],
+            "tax_payments": totals["documented_tax_payments"],
+            "fd_principal": totals["documented_fd_principal"],
+            "fd_interest": totals["documented_fd_interest"],
+            "ppf_contribution": totals["documented_ppf_contribution"],
+            "ppf_interest": totals["documented_ppf_interest"],
+            "ppf_closing_balance": totals["documented_ppf_closing_balance"],
+            "challan_count": float(challan_count),
+        },
         "action_items": action_items,
         "tax_notes": [
             f"Computed using India new tax regime slabs for {fy_label}.",
             "Health & Education cess at 4% is included.",
-            "Surcharge and salary standard deduction adjustments are not applied in this estimate.",
+            (
+                "Surcharge and salary standard deduction adjustments are not applied "
+                "in this estimate."
+            ),
+            (
+                "Document linkage uses uploaded metadata from interest certificates, "
+                "FD reports, tax challans, and PPF statements."
+            ),
         ],
     }

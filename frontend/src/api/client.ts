@@ -159,6 +159,16 @@ class ApiClient {
     });
   }
 
+  async clearMyData(currentPassword: string, confirmation: string) {
+    return this.request<ClearUserDataResponse>('/auth/clear-data', {
+      method: 'POST',
+      body: JSON.stringify({
+        current_password: currentPassword,
+        confirmation,
+      }),
+    });
+  }
+
   async getMe() {
     return this.request<{ id: string; email: string; display_name: string }>('/auth/me');
   }
@@ -169,6 +179,7 @@ class ApiClient {
     password?: string,
     bankHint?: string,
     accountTypeHint?: string,
+    documentTypeHint?: string,
     forceReprocess: boolean = false,
   ) {
     const formData = new FormData();
@@ -178,10 +189,40 @@ class ApiClient {
     if (accountTypeHint && accountTypeHint !== 'auto') {
       formData.append('account_type_hint', accountTypeHint);
     }
+    if (documentTypeHint) formData.append('document_type_hint', documentTypeHint);
     if (forceReprocess) formData.append('force_reprocess', 'true');
     return this.request<UploadResponse>(
       '/upload/pdf',
       { method: 'POST', body: formData }
+    );
+  }
+
+  async uploadPdfs(
+    items: Array<{
+      file: File;
+      password?: string;
+      bank_hint?: string;
+      account_type_hint?: string;
+      document_type_hint?: string;
+      force_reprocess?: boolean;
+    }>,
+  ) {
+    const formData = new FormData();
+    const itemPayload: Array<Record<string, unknown>> = [];
+    for (const item of items) {
+      formData.append('files', item.file);
+      itemPayload.push({
+        password: item.password || undefined,
+        bank_hint: item.bank_hint || undefined,
+        account_type_hint: item.account_type_hint || undefined,
+        document_type_hint: item.document_type_hint || undefined,
+        force_reprocess: Boolean(item.force_reprocess),
+      });
+    }
+    formData.append('items_json', JSON.stringify(itemPayload));
+    return this.request<BulkUploadResponse>(
+      '/upload/pdfs',
+      { method: 'POST', body: formData },
     );
   }
 
@@ -339,6 +380,13 @@ class ApiClient {
     if (params?.to) query.set('to', params.to);
     const qs = query.toString();
     return this.request<TaxComplianceResponse>(`/insights/tax-compliance${qs ? `?${qs}` : ''}`);
+  }
+
+  async assistantChat(payload: AssistantChatRequest) {
+    return this.request<AssistantChatResponse>('/assistant/chat', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 
   // ─── Budgets ───
@@ -503,6 +551,14 @@ export interface UploadReviewItem {
 
 export interface MessageResponse {
   message: string;
+}
+
+export interface ClearUserDataResponse {
+  message: string;
+  deleted_rows: Record<string, number>;
+  deleted_files: number;
+  deleted_directories: number;
+  file_delete_errors: number;
 }
 
 export interface StatementIntegrityResponse {
@@ -702,6 +758,15 @@ export interface TaxComplianceTotals {
   new_regime_total_tax: number;
   new_regime_rebate_threshold: number;
   tax_due_or_refund: number;
+  documented_interest_income: number;
+  documented_interest_tds: number;
+  documented_tax_payments: number;
+  documented_fd_principal: number;
+  documented_fd_interest: number;
+  documented_ppf_contribution: number;
+  documented_ppf_interest: number;
+  documented_ppf_closing_balance: number;
+  savings_account_count: number;
 }
 
 export interface TaxActionItem {
@@ -719,6 +784,22 @@ export interface TaxComplianceCashItem {
   account_type: string | null;
 }
 
+export interface TaxSavingsAccount {
+  bank_name: string;
+  account_masked: string | null;
+  statement_count: number;
+  interest_income: number;
+}
+
+export interface TaxLinkageCheck {
+  check: string;
+  status: string;
+  ledger_amount: number;
+  document_amount: number;
+  gap: number;
+  detail: string;
+}
+
 export interface TaxComplianceResponse {
   period_start: string;
   period_end: string;
@@ -728,6 +809,9 @@ export interface TaxComplianceResponse {
   document_coverage: Record<string, number>;
   unresolved_statement_docs: number;
   high_value_cash_expenses: TaxComplianceCashItem[];
+  savings_accounts: TaxSavingsAccount[];
+  linkage_checks: TaxLinkageCheck[];
+  document_amounts: Record<string, number>;
   action_items: TaxActionItem[];
   tax_notes: string[];
 }
@@ -828,6 +912,49 @@ export interface UploadResponse {
   bank_name?: string | null;
   account_type?: string | null;
   parser_used?: string | null;
+}
+
+export interface BulkUploadResultItem {
+  file_name: string;
+  pdf_id: string;
+  document_id?: string | null;
+  status: string;
+  message: string;
+  bank_name?: string | null;
+  account_type?: string | null;
+}
+
+export interface BulkUploadResponse {
+  total: number;
+  success_count: number;
+  reviewing_count: number;
+  duplicate_count: number;
+  failed_count: number;
+  items: BulkUploadResultItem[];
+}
+
+export interface AssistantChatRequest {
+  message: string;
+  apply_changes?: boolean;
+  max_candidates?: number;
+}
+
+export interface AssistantActionResult {
+  action: string;
+  transaction_id: string;
+  status: string;
+  detail: string;
+  before?: string | null;
+  after?: string | null;
+}
+
+export interface AssistantChatResponse {
+  reply: string;
+  proposed_count: number;
+  applied_count: number;
+  skipped_count: number;
+  warnings: string[];
+  actions: AssistantActionResult[];
 }
 
 export const api = new ApiClient();

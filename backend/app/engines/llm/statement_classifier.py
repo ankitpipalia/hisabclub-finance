@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.config import settings
 from app.engines.llm.client import LLMClient
 from app.engines.llm.knowledge import StatementKnowledgeContext
 from app.engines.llm.prompts import (
@@ -53,8 +54,8 @@ async def llm_classify_statement(
         messages,
         model=model,
         max_tokens=260,
-        timeout_sec=30.0,
-        max_attempts=2,
+        timeout_sec=settings.llm_statement_classify_timeout_sec,
+        max_attempts=settings.llm_statement_classify_max_attempts,
         schema={
             "type": "object",
             "properties": {

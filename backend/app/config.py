@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     llm_iterative_chunk_chars: int = 5200
     llm_iterative_overlap_lines: int = 6
     llm_max_chunk_count: int = 12
+    llm_request_timeout_sec: float = 300.0
+    llm_request_max_attempts: int = 4
+    llm_statement_extract_timeout_sec: float = 300.0
+    llm_statement_extract_max_attempts: int = 4
+    llm_statement_classify_timeout_sec: float = 180.0
+    llm_statement_classify_max_attempts: int = 4
+    llm_table_map_timeout_sec: float = 180.0
+    llm_table_map_max_attempts: int = 4
     promotion_confidence_threshold: float = 0.75
     min_yield_rate_for_auto_promotion: float = 0.55
     require_cc_integrity_ok_for_auto_promotion: bool = False
@@ -52,7 +60,10 @@ class Settings(BaseSettings):
 
     # Privacy and local processing guardrails
     local_only_mode: bool = True
-    local_allowed_roots: str = "/app/uploads,/home/ankit/Documents,/home/ankit/Downloads"
+    local_allowed_roots: str = (
+        "/app/uploads,/home,/Users,/Volumes,/mnt,/media,"
+        "/home/ankit/Documents,/home/ankit/Downloads"
+    )
     local_allowed_llm_hosts: str = "localhost,127.0.0.1,::1"
     cold_storage_enabled: bool = True
     cold_storage_dir: str = "./uploads/cold"

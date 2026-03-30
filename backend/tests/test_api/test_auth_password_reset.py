@@ -140,3 +140,61 @@ async def test_change_password_updates_hash_and_revokes_tokens(monkeypatch):
     assert argon2.verify("UpdatedPassword@123", user.password_hash)
     assert revoked["called"] is True
     assert db.committed == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_my_data_requires_confirmation_phrase():
+    user = SimpleNamespace(
+        id=uuid.uuid4(),
+        email="wipe@example.com",
+        display_name="Wipe User",
+        password_hash=argon2.hash("CurrentPassword@123"),
+    )
+    db = _AuthDb([])
+
+    with pytest.raises(auth_api.HTTPException) as exc:
+        await auth_api.clear_my_data(
+            auth_api.ClearUserDataRequest(
+                current_password="CurrentPassword@123",
+                confirmation="DELETE EVERYTHING",
+            ),
+            user,
+            db,
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_clear_my_data_calls_reset_engine_and_commits(monkeypatch):
+    user = SimpleNamespace(
+        id=uuid.uuid4(),
+        email="wipe2@example.com",
+        display_name="Wipe User 2",
+        password_hash=argon2.hash("CurrentPassword@123"),
+    )
+    db = _AuthDb([])
+
+    async def _fake_clear_user_data_everywhere(_db, *, user_id):
+        assert user_id == user.id
+        return SimpleNamespace(
+            deleted_rows={"canonical_transactions": 12, "statements": 3},
+            deleted_files=7,
+            deleted_directories=2,
+            file_delete_errors=0,
+        )
+
+    monkeypatch.setattr(auth_api, "clear_user_data_everywhere", _fake_clear_user_data_everywhere)
+
+    response = await auth_api.clear_my_data(
+        auth_api.ClearUserDataRequest(
+            current_password="CurrentPassword@123",
+            confirmation="CLEAR MY DATA",
+        ),
+        user,
+        db,
+    )
+
+    assert response.deleted_rows["canonical_transactions"] == 12
+    assert response.deleted_files == 7
+    assert db.committed == 1

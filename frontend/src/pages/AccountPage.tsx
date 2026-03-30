@@ -17,6 +17,11 @@ export default function AccountPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [wipePassword, setWipePassword] = useState('');
+  const [wipeConfirmation, setWipeConfirmation] = useState('');
+  const [wiping, setWiping] = useState(false);
+  const [wipeError, setWipeError] = useState('');
+  const [wipeMessage, setWipeMessage] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -70,6 +75,38 @@ export default function AccountPage() {
     }
   };
 
+  const handleWipeData = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setWipeError('');
+    setWipeMessage('');
+
+    if (!wipePassword.trim()) {
+      setWipeError('Current password is required to clear data.');
+      return;
+    }
+    if (wipeConfirmation.trim().toUpperCase() !== 'CLEAR MY DATA') {
+      setWipeError('Type "CLEAR MY DATA" to confirm.');
+      return;
+    }
+    if (!window.confirm('This will permanently delete all your transactions, statements, PDFs, and local LLM memory. Continue?')) {
+      return;
+    }
+
+    setWiping(true);
+    try {
+      const response = await api.clearMyData(wipePassword, wipeConfirmation);
+      setWipeMessage(
+        `${response.message} Rows deleted: ${Object.values(response.deleted_rows).reduce((acc, n) => acc + n, 0)}. Files deleted: ${response.deleted_files}.`,
+      );
+      setWipePassword('');
+      setWipeConfirmation('');
+    } catch (err: unknown) {
+      setWipeError(err instanceof Error ? err.message : 'Could not clear user data.');
+    } finally {
+      setWiping(false);
+    }
+  };
+
   return (
     <div className="hc-page">
       <section className="hc-stagger">
@@ -108,6 +145,57 @@ export default function AccountPage() {
           ) : (
             <div className="hc-msg hc-msg-danger">{error || 'Could not load account details.'}</div>
           )}
+
+          <div style={{ marginTop: '1.2rem', borderTop: '1px solid var(--hc-border)', paddingTop: '1rem' }}>
+            <h3 className="hc-panel-title" style={{ color: 'var(--hc-danger, #dc2626)' }}>
+              Danger Zone
+            </h3>
+            <p className="hc-panel-sub" style={{ marginTop: '0.35rem' }}>
+              Permanently removes all your user data from database, local PDFs, and local LLM knowledge memory.
+            </p>
+
+            {wipeError && <div className="hc-msg hc-msg-danger" style={{ marginTop: '0.8rem' }}>{wipeError}</div>}
+            {wipeMessage && <div className="hc-msg hc-msg-ok" style={{ marginTop: '0.8rem' }}>{wipeMessage}</div>}
+
+            <form onSubmit={handleWipeData} className="space-y-4" style={{ marginTop: '0.8rem' }}>
+              <div>
+                <label htmlFor="wipe-password" className="hc-label">
+                  Current Password
+                </label>
+                <input
+                  id="wipe-password"
+                  type="password"
+                  value={wipePassword}
+                  onChange={(e) => setWipePassword(e.target.value)}
+                  className="hc-input"
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="wipe-confirmation" className="hc-label">
+                  Type CLEAR MY DATA
+                </label>
+                <input
+                  id="wipe-confirmation"
+                  type="text"
+                  value={wipeConfirmation}
+                  onChange={(e) => setWipeConfirmation(e.target.value)}
+                  className="hc-input"
+                  placeholder="CLEAR MY DATA"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={wiping}
+                className="hc-btn hc-btn-outline"
+                style={{ width: '100%', borderColor: '#dc2626', color: '#dc2626' }}
+              >
+                {wiping ? 'Clearing All Data...' : 'Delete All My Data'}
+              </button>
+            </form>
+          </div>
         </section>
 
         <section className="hc-panel">

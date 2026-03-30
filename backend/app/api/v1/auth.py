@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
+from app.engines.account.data_reset import clear_user_data_everywhere
 from app.engines.auth.password_reset import (
     build_password_reset_url,
     consume_password_reset_token,
@@ -17,6 +18,8 @@ from app.engines.auth.password_reset import (
 from app.models.user import User
 from app.schemas.auth import (
     ChangePasswordRequest,
+    ClearUserDataRequest,
+    ClearUserDataResponse,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     LoginRequest,
@@ -160,6 +163,31 @@ async def change_password(request: ChangePasswordRequest, user: CurrentUser, db:
     await revoke_other_password_reset_tokens(db, user.id)
     await db.commit()
     return MessageResponse(message="Password changed successfully.")
+
+
+@router.post("/clear-data", response_model=ClearUserDataResponse)
+async def clear_my_data(request: ClearUserDataRequest, user: CurrentUser, db: DbSession):
+    confirmation = (request.confirmation or "").strip().lower()
+    if confirmation != "clear my data":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Confirmation must be exactly "CLEAR MY DATA".',
+        )
+    if not argon2.verify(request.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+
+    result = await clear_user_data_everywhere(db, user_id=user.id)
+    await db.commit()
+    return ClearUserDataResponse(
+        message="All user-scoped data, files, and local LLM context have been cleared.",
+        deleted_rows=result.deleted_rows,
+        deleted_files=result.deleted_files,
+        deleted_directories=result.deleted_directories,
+        file_delete_errors=result.file_delete_errors,
+    )
 
 
 @router.get("/me", response_model=UserResponse)

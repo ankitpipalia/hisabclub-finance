@@ -16,7 +16,7 @@ import AnimatedOrbs from '../components/AnimatedOrbs';
 import BrandMark from '../components/BrandMark';
 import FadeInView from '../components/FadeInView';
 
-type DocumentTypeHint = 'auto' | 'bank_account' | 'credit_card';
+type DocumentTypeHint = (typeof DOCUMENT_TYPE_OPTIONS)[number]['value'];
 
 interface SelectedFile {
   id: string;
@@ -25,7 +25,7 @@ interface SelectedFile {
   size: number | undefined;
   password: string;
   bankHint: string;
-  accountTypeHint: DocumentTypeHint;
+  documentTypeHint: DocumentTypeHint;
   forceReprocess?: boolean;
 }
 
@@ -145,7 +145,7 @@ export default function UploadScreen() {
           size: asset.size,
           password: '',
           bankHint: '',
-          accountTypeHint: 'auto' as DocumentTypeHint,
+          documentTypeHint: 'auto' as DocumentTypeHint,
         }));
         setSelectedFiles((current) => [...current, ...next]);
       }
@@ -181,7 +181,8 @@ export default function UploadScreen() {
             file.name,
             file.password || undefined,
             file.bankHint || undefined,
-            file.accountTypeHint,
+            toAccountTypeHint(file.documentTypeHint),
+            file.documentTypeHint,
             file.forceReprocess ?? false,
           );
           const serverId = response.document_id || response.pdf_id || file.id;
@@ -283,7 +284,7 @@ export default function UploadScreen() {
           ]}
         >
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Select Files</Text>
+            <Text style={styles.sectionTitle}>Select Folder / Files (Client Side)</Text>
             <Button
               mode="outlined"
               onPress={handlePickFile}
@@ -293,6 +294,9 @@ export default function UploadScreen() {
             >
               {selectedFiles.length > 0 ? 'Add More PDFs' : 'Pick PDF Files'}
             </Button>
+            <Text style={styles.passwordHint}>
+              Pick all PDFs from your folder in the native file picker. Files are uploaded from your device (client side).
+            </Text>
           </View>
 
           {selectedFiles.length > 0 && (
@@ -316,17 +320,19 @@ export default function UploadScreen() {
                       </Button>
                     </View>
 
-                    <Text style={styles.fieldLabel}>Statement Type</Text>
+                    <Text style={styles.fieldLabel}>Document Type</Text>
                     <View style={styles.optionRow}>
                       {DOCUMENT_TYPE_OPTIONS.map((option) => (
                         <Button
                           key={option.value}
-                          mode={file.accountTypeHint === option.value ? 'contained' : 'outlined'}
-                          onPress={() => updateFile(file.id, { accountTypeHint: option.value as DocumentTypeHint })}
+                          mode={file.documentTypeHint === option.value ? 'contained' : 'outlined'}
+                          onPress={() =>
+                            updateFile(file.id, { documentTypeHint: option.value as DocumentTypeHint })
+                          }
                           compact
                           style={styles.typeChip}
-                          buttonColor={file.accountTypeHint === option.value ? colors.primary : undefined}
-                          textColor={file.accountTypeHint === option.value ? '#FFFFFF' : colors.text}
+                          buttonColor={file.documentTypeHint === option.value ? colors.primary : undefined}
+                          textColor={file.documentTypeHint === option.value ? '#FFFFFF' : colors.text}
                         >
                           {option.label}
                         </Button>
@@ -374,7 +380,7 @@ export default function UploadScreen() {
                       activeOutlineColor={colors.primary}
                     />
                     <Text style={styles.passwordHint}>
-                      Auto mode lets the local LLM decide whether this PDF is a bank account statement or a credit card statement.
+                      Auto mode lets the local LLM classify bank, tax, and demat documents.
                     </Text>
                   </View>
                 ))}
@@ -462,6 +468,12 @@ function normalizeReviewStatus(status: string): UploadNotification['status'] {
     return 'success';
   }
   return 'error';
+}
+
+function toAccountTypeHint(documentTypeHint: DocumentTypeHint): string | undefined {
+  if (documentTypeHint === 'credit_card_statement') return 'credit_card';
+  if (documentTypeHint === 'bank_statement') return 'bank_account';
+  return undefined;
 }
 
 const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
@@ -578,6 +590,21 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
   input: {
     marginTop: 8,
     backgroundColor: COLORS.surface,
+  },
+  toggleRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  toggleText: {
+    fontSize: 13,
+    color: COLORS.text,
+    fontWeight: '600',
   },
   passwordHint: {
     fontSize: 12,

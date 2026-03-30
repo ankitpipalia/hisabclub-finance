@@ -4,22 +4,28 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.engines.intake.doc_classifier import classify_document
+from app.engines.intake.tax_document_parser import extract_tax_document_metadata
 from app.engines.ledger.transfer_reclassifier import reclassify_transfer_payments_for_user
 from app.engines.llm.knowledge import ingest_pdf_knowledge
 from app.engines.parser.base import StatementDuplicateError, parse_statement
-from app.models.document_knowledge_chunk import DocumentKnowledgeChunk
+from app.engines.parser.pdf_utils import decrypt_pdf
+from app.engines.parser.pdf_utils import extract_text as extract_pdf_text
 from app.models.document_artifact import DocumentArtifact
+from app.models.document_knowledge_chunk import DocumentKnowledgeChunk
 from app.models.raw_pdf import RawPdf
+
 
 @dataclass
 class FolderImportResult:
@@ -45,7 +51,17 @@ async def import_folder(
     password_map: dict[str, str] | None = None,
     max_files: int | None = None,
 ) -> FolderImportResult:
-    root = Path(folder_path).expanduser().resolve()
+    root = _resolve_folder_path(folder_path)
+    if not root.exists():
+        raise ValueError(
+            "Folder path does not exist on backend host. "
+            f"Resolved path: {root}"
+        )
+    if not root.is_dir():
+        raise ValueError(
+            "Provided folder path is not a directory. "
+            f"Resolved path: {root}"
+        )
     _validate_path_allowed(root)
 
     result = FolderImportResult()
@@ -134,6 +150,8 @@ async def import_folder(
         )
         if not should_parse_pdf:
             if path.suffix.lower() == ".pdf":
+                non_statement_content = b""
+                password = _password_for_path(str(path), password_map)
                 try:
                     with open(path, "rb") as f:
                         non_statement_content = f.read()
@@ -141,18 +159,45 @@ async def import_folder(
                         db=db,
                         user_id=user_id,
                         pdf_content=non_statement_content,
-                        password=_password_for_path(str(path), password_map),
+                        password=password,
                         source_filename=path.name,
                         source_kind="artifact",
                         artifact_id=artifact.id,
                         bank_hint=classified.bank_hint,
                         account_type_hint=(
-                            "credit_card" if classified.doc_type == "credit_card_statement" else None
+                            "credit_card"
+                            if classified.doc_type == "credit_card_statement"
+                            else None
                         ),
                         doc_type=classified.doc_type,
                     )
                 except Exception:
                     pass
+                metadata = dict(artifact.metadata_json or {})
+                if classified.doc_type not in {
+                    "bank_statement",
+                    "credit_card_statement",
+                    "unknown_pdf",
+                    "unsupported_bank",
+                    "unsupported",
+                    "unsupported_file",
+                }:
+                    extracted_text = ""
+                    if non_statement_content:
+                        try:
+                            decrypted = decrypt_pdf(non_statement_content, password)
+                            pages = extract_pdf_text(decrypted)
+                            extracted_text = "\n".join(pages)
+                        except Exception:
+                            extracted_text = ""
+                    parsed = extract_tax_document_metadata(
+                        doc_type=classified.doc_type,
+                        text=extracted_text,
+                        source_filename=path.name,
+                    )
+                    metadata.update(parsed)
+                metadata["parent_dir"] = str(path.parent)
+                artifact.metadata_json = metadata
             artifact.status = "skipped"
             artifact.parse_message = "Registered for non-statement workflow"
             artifact.processed_at = datetime.now(timezone.utc)
@@ -235,7 +280,12 @@ async def import_folder(
                         DocumentKnowledgeChunk.raw_pdf_id == pdf_id,
                     )
                 )
-                await db.execute(delete(RawPdf).where(RawPdf.id == pdf_id, RawPdf.user_id == user_id))
+                await db.execute(
+                    delete(RawPdf).where(
+                        RawPdf.id == pdf_id,
+                        RawPdf.user_id == user_id,
+                    )
+                )
                 try:
                     if os.path.exists(storage_path):
                         os.remove(storage_path)
@@ -354,3 +404,68 @@ def _validate_path_allowed(path: Path) -> None:
         "Path is outside configured local roots. "
         f"Allowed roots: {[str(r) for r in allowed_roots]}"
     )
+
+
+def _resolve_folder_path(path_input: str) -> Path:
+    """Normalize user-provided folder path across Linux/macOS/Windows formats."""
+    raw = (path_input or "").strip().strip('"').strip("'")
+    if not raw:
+        raise ValueError("Folder path is required.")
+
+    candidates = _path_candidates(raw)
+    resolved_candidates: list[Path] = []
+    for candidate in candidates:
+        path_obj = Path(candidate).expanduser()
+        try:
+            resolved = path_obj.resolve(strict=False)
+        except Exception:
+            continue
+        resolved_candidates.append(resolved)
+        if resolved.exists():
+            return resolved
+
+    if resolved_candidates:
+        return resolved_candidates[0]
+    return Path(raw).expanduser().resolve(strict=False)
+
+
+def _path_candidates(raw: str) -> list[str]:
+    out: list[str] = []
+
+    def add(value: str | None) -> None:
+        if not value:
+            return
+        normalized = value.strip()
+        if not normalized:
+            return
+        if normalized not in out:
+            out.append(normalized)
+
+    add(raw)
+
+    if raw.lower().startswith("file://"):
+        parsed = urlparse(raw)
+        candidate = unquote(parsed.path or "")
+        if parsed.netloc and not candidate.startswith("/"):
+            candidate = f"/{parsed.netloc}/{candidate}"
+        add(candidate)
+
+    add(raw.replace("\\", "/"))
+
+    # Convert Windows drive path (C:\foo\bar or C:/foo/bar) to common POSIX mounts.
+    windows_drive_match = re.match(r"^([a-zA-Z]):[\\/](.*)$", raw)
+    if windows_drive_match:
+        drive = windows_drive_match.group(1).lower()
+        tail = windows_drive_match.group(2).replace("\\", "/")
+        add(f"/mnt/{drive}/{tail}")
+        add(f"/{drive}/{tail}")
+
+    # macOS path fallback for Linux hosts with mirrored home directories.
+    mac_user_match = re.match(r"^/Users/([^/]+)/(.*)$", raw.replace("\\", "/"))
+    if mac_user_match:
+        user = mac_user_match.group(1)
+        tail = mac_user_match.group(2)
+        add(f"/home/{user}/{tail}")
+        add(str(Path.home() / tail))
+
+    return out

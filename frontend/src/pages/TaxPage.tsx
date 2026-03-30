@@ -132,6 +132,10 @@ export default function TaxPage() {
               <p className="hc-stat-label">Unresolved Statements</p>
               <p className="hc-stat-value">{taxReport.unresolved_statement_docs}</p>
             </div>
+            <div className="hc-panel">
+              <p className="hc-stat-label">Savings Accounts Mapped</p>
+              <p className="hc-stat-value">{taxReport.totals.savings_account_count}</p>
+            </div>
           </section>
 
           <section className="hc-grid-2">
@@ -160,6 +164,69 @@ export default function TaxPage() {
                   <div key={k} className="hc-badge" style={{ justifyContent: 'space-between' }}>
                     <span>{k}</span>
                     <strong>{v}</strong>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: '0.8rem' }}>
+                <p className="hc-panel-sub">Documented Amounts</p>
+                <p className="hc-panel-sub" style={{ marginTop: '0.35rem' }}>
+                  Interest: {formatAmount(taxReport.totals.documented_interest_income)} ·
+                  Tax paid: {formatAmount(taxReport.totals.documented_tax_payments)}
+                </p>
+                <p className="hc-panel-sub" style={{ marginTop: '0.2rem' }}>
+                  FD principal: {formatAmount(taxReport.totals.documented_fd_principal)} ·
+                  PPF contribution: {formatAmount(taxReport.totals.documented_ppf_contribution)}
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section className="hc-grid-2">
+            <div className="hc-panel">
+              <h2 className="hc-panel-title">Savings Account Map</h2>
+              {taxReport.savings_accounts.length === 0 ? (
+                <p className="hc-panel-sub" style={{ marginTop: '0.7rem' }}>
+                  No savings/current accounts detected yet.
+                </p>
+              ) : (
+                <div className="space-y-2" style={{ marginTop: '0.8rem' }}>
+                  {taxReport.savings_accounts.map((item) => (
+                    <div key={`${item.bank_name}-${item.account_masked ?? 'na'}`} className="hc-badge" style={{ justifyContent: 'space-between' }}>
+                      <span>
+                        {item.bank_name}
+                        {item.account_masked ? ` · ${item.account_masked}` : ''}
+                      </span>
+                      <span>
+                        {item.statement_count} stmt · {formatAmount(item.interest_income)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="hc-panel">
+              <h2 className="hc-panel-title">Ledger ↔ Document Linkage</h2>
+              <div className="space-y-2" style={{ marginTop: '0.8rem' }}>
+                {taxReport.linkage_checks.map((check) => (
+                  <div key={check.check} className="hc-panel" style={{ background: 'transparent' }}>
+                    <div
+                      className={`hc-badge ${
+                        check.status === 'matched'
+                          ? 'hc-badge-ok'
+                          : check.status === 'review_required'
+                            ? 'hc-badge-warn'
+                            : 'hc-badge-accent'
+                      }`}
+                    >
+                      {check.status}
+                    </div>
+                    <p style={{ fontWeight: 600, marginTop: '0.35rem' }}>{check.check}</p>
+                    <p className="hc-panel-sub" style={{ marginTop: '0.2rem' }}>
+                      Ledger {formatAmount(check.ledger_amount)} · Document {formatAmount(check.document_amount)} ·
+                      Gap {formatAmount(Math.abs(check.gap))}
+                    </p>
+                    <p className="hc-panel-sub" style={{ marginTop: '0.2rem' }}>{check.detail}</p>
                   </div>
                 ))}
               </div>

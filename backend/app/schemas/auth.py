@@ -34,8 +34,21 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class ClearUserDataRequest(BaseModel):
+    current_password: str
+    confirmation: str
+
+
 class MessageResponse(BaseModel):
     message: str
+
+
+class ClearUserDataResponse(BaseModel):
+    message: str
+    deleted_rows: dict[str, int]
+    deleted_files: int
+    deleted_directories: int
+    file_delete_errors: int
 
 
 class TokenResponse(BaseModel):

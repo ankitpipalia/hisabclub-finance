@@ -37,6 +37,9 @@ export default function SettingsScreen() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [changingPassword, setChangingPassword] = useState(false);
+  const [wipePassword, setWipePassword] = useState('');
+  const [wipeConfirmation, setWipeConfirmation] = useState('');
+  const [wipingData, setWipingData] = useState(false);
 
   const meQuery = useQuery({
     queryKey: ['me'],
@@ -132,6 +135,48 @@ export default function SettingsScreen() {
     } finally {
       setChangingPassword(false);
     }
+  };
+
+  const doClearData = async () => {
+    if (!wipePassword.trim()) {
+      Alert.alert('Error', 'Current password is required');
+      return;
+    }
+    if (wipeConfirmation.trim().toUpperCase() !== 'CLEAR MY DATA') {
+      Alert.alert('Error', 'Type CLEAR MY DATA to confirm');
+      return;
+    }
+
+    setWipingData(true);
+    try {
+      const result = await api.clearMyData(wipePassword, wipeConfirmation);
+      const totalRows = Object.values(result.deleted_rows || {}).reduce((sum, value) => sum + value, 0);
+      setWipePassword('');
+      setWipeConfirmation('');
+      Alert.alert(
+        'Data cleared',
+        `${result.message}\nRows deleted: ${totalRows}\nFiles deleted: ${result.deleted_files}`,
+      );
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not clear data');
+    } finally {
+      setWipingData(false);
+    }
+  };
+
+  const handleClearData = () => {
+    Alert.alert(
+      'Delete all user data?',
+      'This permanently deletes statements, transactions, uploaded PDFs, and local LLM memory for this user.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All Data',
+          style: 'destructive',
+          onPress: doClearData,
+        },
+      ],
+    );
   };
 
   const user = meQuery.data;
@@ -418,6 +463,47 @@ export default function SettingsScreen() {
             Update Password
           </Button>
         </View>
+
+        <View style={styles.dangerCard}>
+          <Text style={styles.dangerTitle}>Danger Zone</Text>
+          <Text style={styles.dangerDescription}>
+            Permanently removes all your user data from database, local PDFs, and local LLM memory.
+          </Text>
+          <TextInput
+            label="Current Password"
+            value={wipePassword}
+            onChangeText={setWipePassword}
+            mode="outlined"
+            secureTextEntry
+            autoComplete="password"
+            textContentType="password"
+            style={styles.input}
+            outlineColor={colors.border}
+            activeOutlineColor={colors.danger}
+          />
+          <TextInput
+            label="Type CLEAR MY DATA"
+            value={wipeConfirmation}
+            onChangeText={setWipeConfirmation}
+            mode="outlined"
+            autoCapitalize="characters"
+            autoComplete="off"
+            textContentType="none"
+            style={styles.input}
+            outlineColor={colors.border}
+            activeOutlineColor={colors.danger}
+          />
+          <Button
+            mode="outlined"
+            onPress={handleClearData}
+            loading={wipingData}
+            disabled={wipingData}
+            style={styles.clearDataButton}
+            textColor={colors.danger}
+          >
+            {wipingData ? 'Clearing All Data...' : 'Delete All My Data'}
+          </Button>
+        </View>
       </FadeInView>
 
       <Divider style={styles.divider} />
@@ -596,6 +682,31 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
   changePasswordButton: {
     marginTop: 4,
     alignSelf: 'flex-start',
+  },
+  dangerCard: {
+    marginTop: 16,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+    padding: 16,
+  },
+  dangerTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.danger,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  dangerDescription: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    marginBottom: 12,
+  },
+  clearDataButton: {
+    marginTop: 4,
+    alignSelf: 'stretch',
+    borderColor: COLORS.danger,
   },
   logoutButton: {
     marginTop: 8,

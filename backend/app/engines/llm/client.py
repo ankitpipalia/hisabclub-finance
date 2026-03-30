@@ -38,8 +38,8 @@ class LLMClient:
         messages: list[dict],
         max_tokens: int = 2000,
         temperature: float = 0.1,
-        timeout_sec: float = 120.0,
-        max_attempts: int = 3,
+        timeout_sec: float | None = None,
+        max_attempts: int | None = None,
         model: str | None = None,
         response_format: dict | None = None,
         extra_body: dict | None = None,
@@ -69,11 +69,12 @@ class LLMClient:
         if extra_body:
             payload.update(extra_body)
 
-        safe_attempts = max(1, max_attempts)
+        safe_attempts = max(1, int(max_attempts or settings.llm_request_max_attempts))
+        safe_timeout = max(5.0, float(timeout_sec or settings.llm_request_timeout_sec))
         last_error: Exception | None = None
         for attempt in range(safe_attempts):
             try:
-                async with httpx.AsyncClient(timeout=timeout_sec) as client:
+                async with httpx.AsyncClient(timeout=safe_timeout) as client:
                     response = await client.post(url, json=payload, headers=headers)
                     response.raise_for_status()
                     data = response.json()
@@ -124,8 +125,8 @@ class LLMClient:
         schema: dict | None = None,
         max_tokens: int = 2200,
         temperature: float = 0.0,
-        timeout_sec: float = 120.0,
-        max_attempts: int = 2,
+        timeout_sec: float | None = None,
+        max_attempts: int | None = None,
         model: str | None = None,
     ) -> dict | None:
         response_format: dict | None = None

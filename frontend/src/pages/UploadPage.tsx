@@ -7,7 +7,7 @@ import {
   Upload,
   XCircle,
 } from 'lucide-react';
-import { api, ApiError } from '../api/client';
+import { api } from '../api/client';
 
 const BANK_OPTIONS = [
   { value: '', label: 'Auto Detect' },
@@ -29,9 +29,18 @@ const BANK_OPTIONS = [
 ] as const;
 
 const DOCUMENT_TYPE_OPTIONS = [
-  { value: 'auto', label: 'Auto via local LLM' },
-  { value: 'bank_account', label: 'Bank account statement' },
-  { value: 'credit_card', label: 'Credit card statement' },
+  { value: 'auto', label: 'Auto Detect (Bank/Tax)' },
+  { value: 'bank_statement', label: 'Bank account statement' },
+  { value: 'credit_card_statement', label: 'Credit card statement' },
+  { value: 'demat_holdings', label: 'Demat holdings / balance statement' },
+  { value: 'demat_trade_report', label: 'Demat trade report / contract notes' },
+  { value: 'demat_tax_report', label: 'Demat P&L / capital gains report' },
+  { value: 'dividend_report', label: 'Dividend report' },
+  { value: 'interest_certificate', label: 'Interest certificate' },
+  { value: 'fd_report', label: 'FD list/report' },
+  { value: 'tax_challan', label: 'Income-tax challan / direct tax ack' },
+  { value: 'ppf_statement', label: 'PPF statement' },
+  { value: 'tax_form', label: 'Tax form (Form-16/12BB)' },
 ] as const;
 
 type DocumentTypeHint = (typeof DOCUMENT_TYPE_OPTIONS)[number]['value'];
@@ -39,9 +48,10 @@ type DocumentTypeHint = (typeof DOCUMENT_TYPE_OPTIONS)[number]['value'];
 type UploadItem = {
   id: string;
   file: File;
+  fileLabel: string;
   password: string;
   bankHint: string;
-  accountTypeHint: DocumentTypeHint;
+  documentTypeHint: DocumentTypeHint;
   forceReprocess?: boolean;
 };
 
@@ -57,6 +67,7 @@ type UploadNotification = {
 
 export default function UploadPage() {
   const fileRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [notifications, setNotifications] = useState<UploadNotification[]>([]);
@@ -99,14 +110,18 @@ export default function UploadPage() {
   const addFiles = (fileList: FileList | null) => {
     if (!fileList) return;
     const nextItems = Array.from(fileList)
-      .filter((file) => file.type === 'application/pdf')
-      .map((file) => ({
-        id: `${file.name}-${file.lastModified}-${file.size}-${crypto.randomUUID()}`,
-        file,
-        password: '',
-        bankHint: '',
-        accountTypeHint: 'auto' as DocumentTypeHint,
-      }));
+      .filter((file) => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      .map((file) => {
+        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+        return {
+          id: `${file.name}-${file.lastModified}-${file.size}-${crypto.randomUUID()}`,
+          file,
+          fileLabel: relativePath || file.name,
+          password: '',
+          bankHint: '',
+          documentTypeHint: 'auto' as DocumentTypeHint,
+        };
+      });
     if (nextItems.length === 0) return;
     setItems((current) => [...current, ...nextItems]);
   };
@@ -149,7 +164,7 @@ export default function UploadPage() {
     setNotifications((current) => [
       {
         id: item.id,
-        fileName: item.file.name,
+        fileName: item.fileLabel,
         status: 'reviewing',
         message: 'Document is under review by the local LLM. Please wait. We will notify you once it completes.',
       },
@@ -157,79 +172,89 @@ export default function UploadPage() {
     ]);
   };
 
-  const runUpload = async (item: UploadItem) => {
-    startNotification(item);
-    try {
-      const res = await api.uploadPdf(
-        item.file,
-        item.password || undefined,
-        item.bankHint || undefined,
-        item.accountTypeHint,
-        item.forceReprocess ?? false,
-      );
-      const serverId = res.document_id || res.pdf_id || item.id;
-      remapNotificationId(item.id, serverId, item.file.name);
-      if (res.status === 'duplicate') {
-        updateNotification(serverId, {
-          status: 'error',
-          message: res.message || 'This statement already exists. Choose Reprocess to parse it again.',
-          canReprocess: true,
-        });
-        updateItem(item.id, { forceReprocess: true });
-        return;
-      }
-      if (isReviewingStatus(res.status)) {
-        updateNotification(serverId, {
-          status: 'reviewing',
-          message:
-            res.message ||
-            'Document is under review by the local LLM. Please wait. We will notify you once it completes.',
-          bankName: res.bank_name,
-          accountType: res.account_type,
-        });
-        removeItem(item.id);
-        return;
-      }
-      if (res.status !== 'success' && res.status !== 'parsed') {
-        updateNotification(serverId, {
-          status: 'error',
-          message: res.message || 'Upload review failed.',
-          bankName: res.bank_name,
-          accountType: res.account_type,
-        });
-        return;
-      }
-      updateNotification(serverId, {
-        status: 'success',
-        message: res.message,
-        bankName: res.bank_name,
-        accountType: res.account_type,
-        canReprocess: false,
-      });
-      removeItem(item.id);
-    } catch (err: unknown) {
-      if (err instanceof ApiError && err.status === 409) {
-        updateNotification(item.id, {
-          status: 'error',
-          message: 'This statement already exists. Choose Reprocess to parse it again.',
-          canReprocess: true,
-        });
-        updateItem(item.id, { forceReprocess: true });
-        return;
-      }
-      const message = err instanceof Error ? err.message : 'Upload failed.';
-      updateNotification(item.id, { status: 'error', message });
-    }
-  };
-
   const executeUploadQueue = async () => {
     if (items.length === 0 || uploading) return;
     setUploading(true);
+    const queueSnapshot = [...items];
+    const batchSize = 20;
+    for (const item of queueSnapshot) {
+      startNotification(item);
+    }
     try {
-      for (const item of items) {
-        // eslint-disable-next-line no-await-in-loop
-        await runUpload(item);
+      for (let start = 0; start < queueSnapshot.length; start += batchSize) {
+        const batch = queueSnapshot.slice(start, start + batchSize);
+        let response;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          response = await api.uploadPdfs(
+            batch.map((item) => ({
+              file: item.file,
+              password: item.password || undefined,
+              bank_hint: item.bankHint || undefined,
+              account_type_hint: toAccountTypeHint(item.documentTypeHint),
+              document_type_hint: item.documentTypeHint,
+              force_reprocess: item.forceReprocess ?? false,
+            })),
+          );
+        } catch (batchErr: unknown) {
+          const message = batchErr instanceof Error ? batchErr.message : 'Upload failed.';
+          batch.forEach((item) => {
+            updateNotification(item.id, { status: 'error', message });
+          });
+          continue;
+        }
+
+        response.items.forEach((serverItem, index) => {
+          const localItem = batch[index];
+          if (!localItem) return;
+          const serverId = serverItem.document_id || serverItem.pdf_id || localItem.id;
+          remapNotificationId(localItem.id, serverId, localItem.fileLabel);
+
+          if (serverItem.status === 'duplicate') {
+            updateNotification(serverId, {
+              status: 'error',
+              message: serverItem.message || 'This document already exists. Enable reprocess.',
+              canReprocess: true,
+              bankName: serverItem.bank_name,
+              accountType: serverItem.account_type,
+            });
+            updateItem(localItem.id, { forceReprocess: true });
+            return;
+          }
+          if (isReviewingStatus(serverItem.status)) {
+            updateNotification(serverId, {
+              status: 'reviewing',
+              message: serverItem.message,
+              bankName: serverItem.bank_name,
+              accountType: serverItem.account_type,
+            });
+            removeItem(localItem.id);
+            return;
+          }
+          if (serverItem.status === 'success' || serverItem.status === 'parsed') {
+            updateNotification(serverId, {
+              status: 'success',
+              message: serverItem.message,
+              bankName: serverItem.bank_name,
+              accountType: serverItem.account_type,
+              canReprocess: false,
+            });
+            removeItem(localItem.id);
+            return;
+          }
+          updateNotification(serverId, {
+            status: 'error',
+            message: serverItem.message || 'Upload failed.',
+            bankName: serverItem.bank_name,
+            accountType: serverItem.account_type,
+          });
+        });
       }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Upload failed.';
+      queueSnapshot.forEach((item) => {
+        updateNotification(item.id, { status: 'error', message });
+      });
     } finally {
       setUploading(false);
     }
@@ -252,14 +277,52 @@ export default function UploadPage() {
           <p className="hc-kicker">Statement Intake</p>
           <h1 className="hc-page-title">Upload Documents</h1>
           <p className="hc-page-subtitle">
-            Queue one or more PDFs, choose the statement type per document, and let the local LLM
-            resolve the rest.
+            Queue one or more PDFs, choose bank or tax document type per file, and let the local
+            LLM route each document.
           </p>
         </div>
       </div>
 
       <div className="hc-grid-2" style={{ alignItems: 'start' }}>
         <section className="hc-panel hc-stagger">
+          <div
+            className="hc-panel"
+            style={{
+              marginBottom: '1rem',
+              background: 'transparent',
+              borderColor: 'var(--hc-border)',
+              padding: '1rem',
+            }}
+          >
+            <h2 className="hc-panel-title">Upload Whole Directory (Client Side)</h2>
+            <p className="hc-panel-sub" style={{ marginTop: '0.25rem' }}>
+              Select a folder from your device. Browser picks files recursively (root to all nested subfolders).
+            </p>
+
+            <div className="hc-inline-actions" style={{ marginTop: '0.75rem' }}>
+              <button
+                type="button"
+                className="hc-btn hc-btn-outline"
+                onClick={() => folderRef.current?.click()}
+              >
+                <Upload size={16} strokeWidth={1.5} />
+                Pick Folder (Recursive)
+              </button>
+            </div>
+
+            <input
+              ref={folderRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => addFiles(e.target.files)}
+              {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+            />
+            <p className="hc-panel-sub" style={{ marginTop: '0.5rem' }}>
+              Works on Windows/macOS/Linux browsers without entering filesystem paths manually.
+            </p>
+          </div>
+
           <div
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
@@ -301,7 +364,7 @@ export default function UploadPage() {
                     <div className="flex items-start gap-3">
                       <FileText size={20} strokeWidth={1.5} color="var(--hc-accent)" />
                       <div>
-                        <p style={{ fontWeight: 600 }}>{item.file.name}</p>
+                        <p style={{ fontWeight: 600 }}>{item.fileLabel}</p>
                         <p className="hc-panel-sub">
                           File {index + 1} · {(item.file.size / 1024 / 1024).toFixed(2)} MB
                         </p>
@@ -320,14 +383,14 @@ export default function UploadPage() {
                   <div className="hc-grid-2" style={{ marginTop: '1rem' }}>
                     <div>
                       <label htmlFor={`doc-type-${item.id}`} className="hc-label">
-                        Statement Type
+                        Document Type
                       </label>
                       <select
                         id={`doc-type-${item.id}`}
-                        value={item.accountTypeHint}
+                        value={item.documentTypeHint}
                         onChange={(e) =>
                           updateItem(item.id, {
-                            accountTypeHint: e.target.value as DocumentTypeHint,
+                            documentTypeHint: e.target.value as DocumentTypeHint,
                           })
                         }
                         className="hc-select"
@@ -381,8 +444,7 @@ export default function UploadPage() {
                         className="hc-input"
                       />
                       <p className="hc-panel-sub" style={{ marginTop: '0.35rem' }}>
-                        Auto mode lets the local LLM decide whether this is a bank account or
-                        credit card statement.
+                        Auto mode lets the local LLM classify bank statements and tax documents.
                       </p>
                     </div>
                   </div>
@@ -492,4 +554,10 @@ function normalizeReviewStatus(status: string): UploadNotification['status'] {
     return 'success';
   }
   return 'error';
+}
+
+function toAccountTypeHint(documentTypeHint: DocumentTypeHint): string | undefined {
+  if (documentTypeHint === 'credit_card_statement') return 'credit_card';
+  if (documentTypeHint === 'bank_statement') return 'bank_account';
+  return undefined;
 }

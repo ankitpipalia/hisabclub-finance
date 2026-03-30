@@ -48,7 +48,16 @@ export const BANK_OPTIONS = [
 export const BANKS = BANK_OPTIONS.map((item) => item.value).filter(Boolean) as string[];
 
 export const DOCUMENT_TYPE_OPTIONS = [
-  { value: 'auto', label: 'Auto via local LLM' },
-  { value: 'bank_account', label: 'Bank account statement' },
-  { value: 'credit_card', label: 'Credit card statement' },
+  { value: 'auto', label: 'Auto detect (bank/tax/demat)' },
+  { value: 'bank_statement', label: 'Bank account statement' },
+  { value: 'credit_card_statement', label: 'Credit card statement' },
+  { value: 'demat_holdings', label: 'Demat holdings / balance statement' },
+  { value: 'demat_trade_report', label: 'Demat trade report / contract notes' },
+  { value: 'demat_tax_report', label: 'Demat P&L / capital gains report' },
+  { value: 'dividend_report', label: 'Dividend report' },
+  { value: 'interest_certificate', label: 'Interest certificate' },
+  { value: 'fd_report', label: 'FD list/report' },
+  { value: 'tax_challan', label: 'Income-tax challan / direct tax ack' },
+  { value: 'ppf_statement', label: 'PPF statement' },
+  { value: 'tax_form', label: 'Tax form (Form-16/12BB)' },
 ] as const;

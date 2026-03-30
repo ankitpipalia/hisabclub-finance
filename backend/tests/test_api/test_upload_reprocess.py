@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from starlette.datastructures import UploadFile
 from app.api.v1 import upload as upload_api
 from app.engines.parser.base import StatementDuplicateError
 from app.engines.parser.password_patterns import PdfPasswordResolution
+from app.schemas.upload import UploadResponse
 
 
 class _DummyResult:
@@ -191,3 +193,52 @@ async def test_semantic_duplicate_job_enqueue_returns_duplicate_status(tmp_path,
 
     assert response.status == "duplicate"
     assert "semantic duplicate" in response.message
+
+
+@pytest.mark.asyncio
+async def test_bulk_upload_endpoint_returns_per_file_results(monkeypatch):
+    async def _fake_upload_pdf(**kwargs):
+        file = kwargs["file"]
+        filename = file.filename or "unknown.pdf"
+        if "challan" in filename.lower():
+            return UploadResponse(
+                pdf_id=str(uuid.uuid4()),
+                document_id=None,
+                status="success",
+                message="registered",
+                bank_name=None,
+                account_type="tax_challan",
+            )
+        return UploadResponse(
+            pdf_id=str(uuid.uuid4()),
+            document_id=None,
+            status="reviewing",
+            message="queued",
+            bank_name="HDFC",
+            account_type="bank_account",
+        )
+
+    monkeypatch.setattr(upload_api, "upload_pdf", _fake_upload_pdf)
+    user = SimpleNamespace(id=uuid.uuid4())
+    db = _DummyDb(existing_pdf=None)
+
+    results = await upload_api.upload_pdfs(
+        user=user,
+        db=db,
+        files=[
+            _make_pdf_upload("stmt-1.pdf"),
+            _make_pdf_upload("tax-challan.pdf"),
+        ],
+        items_json=json.dumps(
+            [
+                {"document_type_hint": "bank_statement"},
+                {"document_type_hint": "tax_challan"},
+            ]
+        ),
+    )
+
+    assert results.total == 2
+    assert results.reviewing_count == 1
+    assert results.success_count == 1
+    assert results.failed_count == 0
+    assert results.items[1].account_type == "tax_challan"

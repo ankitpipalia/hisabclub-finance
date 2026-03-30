@@ -63,3 +63,22 @@ class ParserHealthItemResponse(BaseModel):
     observed_extracted_rows: int = 0
     success_rate: float
     yield_rate: float | None = None
+
+
+class BulkUploadResultItem(BaseModel):
+    file_name: str
+    pdf_id: str
+    document_id: str | None = None
+    status: str
+    message: str
+    bank_name: str | None = None
+    account_type: str | None = None
+
+
+class BulkUploadResponse(BaseModel):
+    total: int
+    success_count: int
+    reviewing_count: int
+    duplicate_count: int
+    failed_count: int
+    items: list[BulkUploadResultItem]

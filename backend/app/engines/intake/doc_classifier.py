@@ -22,56 +22,7 @@ def classify_document(path: str) -> ClassifiedDocument:
     bank_hint = _infer_bank_hint(text)
 
     if ext == "pdf":
-        # Detect non-bank financial documents before generic "statement" matching
-        # to avoid false positives on mutual-fund and demat statements.
-        if _is_investment_document(text):
-            if _has_any(text, ("capital gains", "stcgt", "ltcgt", "gain/loss", "tax report")):
-                return ClassifiedDocument("demat_tax_report")
-            if _has_any(text, ("trade", "contract note", "order history", "f&o", "fno", "p&l", "pnl")):
-                return ClassifiedDocument("demat_trade_report")
-            if _has_any(text, ("dividend",)):
-                return ClassifiedDocument("dividend_report")
-            return ClassifiedDocument("demat_holdings")
-
-        if _has_any(text, ("interest", "tds certificate", "interest certificate")):
-            return ClassifiedDocument("interest_certificate", bank_hint=bank_hint)
-        if _has_any(text, ("form16", "form-16", "partb")):
-            return ClassifiedDocument("tax_form", "form16")
-        if _has_any(text, ("form12bb", "12bb")):
-            return ClassifiedDocument("tax_form", "form12bb")
-        if _has_any(text, ("challan", "receipt")):
-            return ClassifiedDocument("tax_challan")
-        if _has_any(text, ("capital gains", "stcgt", "ltcgt", "p&l", "pnl")):
-            return ClassifiedDocument("demat_tax_report")
-        if _has_any(text, ("holdings", "balance statement")):
-            return ClassifiedDocument("demat_holdings")
-        if _has_any(text, ("dividend",)):
-            return ClassifiedDocument("dividend_report")
-        if _has_any(text, ("fd", "fixed deposit")):
-            return ClassifiedDocument("fd_report", bank_hint=bank_hint)
-        if _has_any(
-            text,
-            (
-                "statement",
-                "account statement",
-                "mini statement",
-                "stmt",
-                "passbook",
-                "transaction statement",
-                "e statement",
-            ),
-        ):
-            if _has_any(text, ("cc", "credit card", "card statement")):
-                return ClassifiedDocument("credit_card_statement", bank_hint=bank_hint)
-            return ClassifiedDocument("bank_statement", bank_hint=bank_hint)
-        if bank_hint and _has_any(
-            text,
-            ("credit card", "card", "cc", "account", "passbook", "txn", "transaction"),
-        ):
-            if _has_any(text, ("credit card", "card", "cc")):
-                return ClassifiedDocument("credit_card_statement", bank_hint=bank_hint)
-            return ClassifiedDocument("bank_statement", bank_hint=bank_hint)
-        return ClassifiedDocument("unknown_pdf", bank_hint=bank_hint)
+        return _classify_pdf_text(text=text, bank_hint=bank_hint)
 
     if ext in {"xlsx", "xls", "csv"}:
         if _has_any(text, ("capital gains", "stcgt", "ltcgt", "tax report")):
@@ -83,6 +34,42 @@ def classify_document(path: str) -> ClassifiedDocument:
         return ClassifiedDocument("spreadsheet")
 
     return ClassifiedDocument("unsupported")
+
+
+def classify_uploaded_pdf(
+    filename: str,
+    extracted_text: str | None = None,
+    *,
+    bank_hint: str | None = None,
+    account_type_hint: str | None = None,
+    document_type_hint: str | None = None,
+) -> ClassifiedDocument:
+    """Classify a manually uploaded PDF using filename + extracted content.
+
+    The upload endpoint can pass explicit hints. If provided, hints are treated
+    as strong routing signals before keyword classification.
+    """
+    normalized_doc_hint = _normalize_doc_type_hint(document_type_hint)
+    normalized_account_hint = (account_type_hint or "").strip().lower()
+    merged_text = f"{filename} {extracted_text or ''}".lower()
+    merged_text = merged_text.replace("_", " ").replace("-", " ")
+    inferred_bank = bank_hint or _infer_bank_hint(merged_text)
+
+    if normalized_doc_hint and normalized_doc_hint != "auto":
+        return ClassifiedDocument(
+            doc_type=normalized_doc_hint,
+            bank_hint=inferred_bank,
+        )
+    if normalized_account_hint == "credit_card":
+        return ClassifiedDocument("credit_card_statement", bank_hint=inferred_bank)
+    if normalized_account_hint in {"bank_account", "savings", "current"}:
+        return ClassifiedDocument("bank_statement", bank_hint=inferred_bank)
+
+    classified = _classify_pdf_text(text=merged_text, bank_hint=inferred_bank)
+    if classified.doc_type == "unknown_pdf":
+        # Backward-safe fallback: legacy upload flow expected statement parsing.
+        return ClassifiedDocument("bank_statement", bank_hint=inferred_bank)
+    return classified
 
 
 def _infer_bank_hint(text: str) -> str | None:
@@ -149,3 +136,108 @@ def _is_investment_document(text: str) -> bool:
             "statement of holdings",
         ),
     )
+
+
+def _classify_pdf_text(*, text: str, bank_hint: str | None) -> ClassifiedDocument:
+    # Detect non-bank financial documents before generic "statement" matching
+    # to avoid false positives on mutual-fund and demat statements.
+    if _is_investment_document(text):
+        if _has_any(text, ("capital gains", "stcgt", "ltcgt", "gain/loss", "tax report")):
+            return ClassifiedDocument("demat_tax_report")
+        if _has_any(text, ("trade", "contract note", "order history", "f&o", "fno", "p&l", "pnl")):
+            return ClassifiedDocument("demat_trade_report")
+        if _has_any(text, ("dividend",)):
+            return ClassifiedDocument("dividend_report")
+        return ClassifiedDocument("demat_holdings")
+
+    if _has_any(text, ("ppf statement", "public provident fund", "ppf account", " ppf ")):
+        return ClassifiedDocument("ppf_statement", bank_hint=bank_hint)
+    if _has_any(text, ("interest", "tds certificate", "interest certificate")):
+        return ClassifiedDocument("interest_certificate", bank_hint=bank_hint)
+    if _has_any(text, ("form16", "form-16", "partb")):
+        return ClassifiedDocument("tax_form", "form16")
+    if _has_any(text, ("form12bb", "12bb")):
+        return ClassifiedDocument("tax_form", "form12bb")
+    if _has_any(
+        text,
+        (
+            "direct tax payment acknowledgement",
+            "income tax challan",
+            "challan receipt",
+            "challanreceipt",
+            "challan no",
+            "cin no",
+            "bsr code",
+            "tax paid",
+            "e-pay tax",
+            "tax payment receipt",
+        ),
+    ):
+        return ClassifiedDocument("tax_challan")
+    if _has_any(text, ("capital gains", "stcgt", "ltcgt", "p&l", "pnl")):
+        return ClassifiedDocument("demat_tax_report")
+    if _has_any(text, ("holdings", "balance statement")):
+        return ClassifiedDocument("demat_holdings")
+    if _has_any(text, ("dividend",)):
+        return ClassifiedDocument("dividend_report")
+    if _has_any(text, ("fd", "fixed deposit")):
+        return ClassifiedDocument("fd_report", bank_hint=bank_hint)
+    if _has_any(
+        text,
+        (
+            "statement",
+            "account statement",
+            "mini statement",
+            "stmt",
+            "passbook",
+            "transaction statement",
+            "e statement",
+        ),
+    ):
+        if _has_any(text, ("cc", "credit card", "card statement")):
+            return ClassifiedDocument("credit_card_statement", bank_hint=bank_hint)
+        return ClassifiedDocument("bank_statement", bank_hint=bank_hint)
+    if bank_hint and _has_any(
+        text,
+        ("credit card", "card", "cc", "account", "passbook", "txn", "transaction"),
+    ):
+        if _has_any(text, ("credit card", "card", "cc")):
+            return ClassifiedDocument("credit_card_statement", bank_hint=bank_hint)
+        return ClassifiedDocument("bank_statement", bank_hint=bank_hint)
+    return ClassifiedDocument("unknown_pdf", bank_hint=bank_hint)
+
+
+_DOC_TYPE_HINT_ALIASES: dict[str, str] = {
+    "auto": "auto",
+    "bank_statement": "bank_statement",
+    "bank_account_statement": "bank_statement",
+    "saving_statement": "bank_statement",
+    "savings_statement": "bank_statement",
+    "credit_card_statement": "credit_card_statement",
+    "interest_certificate": "interest_certificate",
+    "fd_report": "fd_report",
+    "fixed_deposit": "fd_report",
+    "tax_challan": "tax_challan",
+    "direct_tax_ack": "tax_challan",
+    "direct_tax_payment_acknowledgement": "tax_challan",
+    "ppf_statement": "ppf_statement",
+    "tax_form": "tax_form",
+    "dividend_report": "dividend_report",
+    "demat_tax_report": "demat_tax_report",
+    "demat_trade_report": "demat_trade_report",
+    "demat_holdings": "demat_holdings",
+    "stock_holdings": "demat_holdings",
+    "mutual_fund_holdings": "demat_holdings",
+    "balance_statement": "demat_holdings",
+    "capital_gains_statement": "demat_tax_report",
+    "pnl_statement": "demat_tax_report",
+    "p_and_l_statement": "demat_tax_report",
+    "contract_note_report": "demat_trade_report",
+}
+
+
+def _normalize_doc_type_hint(value: str | None) -> str | None:
+    if not value:
+        return None
+    key = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return _DOC_TYPE_HINT_ALIASES.get(key)

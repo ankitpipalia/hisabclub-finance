@@ -133,8 +133,8 @@ async def llm_parse_statement(
             schema=_statement_schema(),
             max_tokens=2600,
             temperature=0.0,
-            timeout_sec=55.0,
-            max_attempts=2,
+            timeout_sec=settings.llm_statement_extract_timeout_sec,
+            max_attempts=settings.llm_statement_extract_max_attempts,
             model=model,
         )
         if not payload:
@@ -339,8 +339,8 @@ async def _infer_table_column_mapping(
         },
         max_tokens=220,
         temperature=0.0,
-        timeout_sec=30.0,
-        max_attempts=2,
+        timeout_sec=settings.llm_table_map_timeout_sec,
+        max_attempts=settings.llm_table_map_max_attempts,
         model=model,
     )
     if not payload:
@@ -351,7 +351,12 @@ async def _infer_table_column_mapping(
         return None
 
 
-def _build_table_row_chunks(rows: list[str], *, chunk_size: int = 120, overlap: int = 8) -> list[list[str]]:
+def _build_table_row_chunks(
+    rows: list[str],
+    *,
+    chunk_size: int = 120,
+    overlap: int = 8,
+) -> list[list[str]]:
     # Skip obvious header-only rows to keep deterministic parser focused on line items.
     filtered = [line for line in rows if line and not _is_probable_header_row(line)]
     if not filtered:

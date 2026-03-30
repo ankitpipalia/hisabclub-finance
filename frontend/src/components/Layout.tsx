@@ -16,6 +16,7 @@ import {
   Menu,
   X,
   UserRound,
+  MessageSquareText,
 } from 'lucide-react';
 import { api } from '../api/client';
 import ThemeModeSelect from './ThemeModeSelect';
@@ -30,6 +31,7 @@ const navItems = [
   { to: '/budgets', icon: Wallet, label: 'Budgets' },
   { to: '/bills', icon: Receipt, label: 'Bills' },
   { to: '/tax', icon: ShieldCheck, label: 'Tax & Audit' },
+  { to: '/assistant', icon: MessageSquareText, label: 'AI Chat Fix' },
 ];
 
 const secondaryItems = [
