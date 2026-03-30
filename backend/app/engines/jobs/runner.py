@@ -17,9 +17,11 @@ from app.engines.jobs.service import (
     requeue_dlq_job,
 )
 from app.engines.ledger.transfer_reclassifier import reclassify_transfer_payments_for_user
+from app.engines.ledger.upi_reconciliation import reconcile_upi_failures_for_user
 from app.engines.parser.base import StatementDuplicateError, parse_statement
 from app.engines.parser.hints import normalize_bank_hint
 from app.engines.parser.password_patterns import resolve_pdf_password
+from app.engines.storage.tiering import move_raw_pdf_to_cold_tier
 from app.models.extraction_job import ExtractionJob
 from app.models.institution_parser_support import InstitutionParserSupport
 from app.models.raw_pdf import RawPdf
@@ -180,6 +182,13 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
             max_gap_days=7,
             use_llm=True,
         )
+        await reconcile_upi_failures_for_user(
+            db=db,
+            user_id=job.user_id,
+            days=3650,
+            max_gap_days=3,
+            limit=10000,
+        )
 
     await _upsert_statement_period_coverage(
         db=db,
@@ -192,13 +201,17 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
         user_id=job.user_id,
         statement=statement,
     )
+    promotion_gates = _apply_post_parse_gates(statement=statement, integrity=integrity)
     await _record_parser_support_observation(
         db=db,
         bank_code=statement.bank_name,
         account_type=statement.account_type,
         parser_id=statement.parser_used,
-        success=statement.parse_status == "parsed",
+        success=statement.parse_status in {"parsed", "review_required"},
+        expected_rows=statement.expected_row_count,
+        extracted_rows=statement.extracted_row_count,
     )
+    moved_to_cold = move_raw_pdf_to_cold_tier(raw_pdf)
     await complete_job(
         db=db,
         job=job,
@@ -207,6 +220,8 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
             "status": statement.parse_status,
             "transaction_count": statement.transaction_count or 0,
             "integrity_gates": integrity,
+            "promotion_gates": promotion_gates,
+            "storage_tier": "cold" if moved_to_cold else (raw_pdf.storage_tier or "hot"),
         },
     )
 
@@ -349,6 +364,8 @@ async def _record_parser_support_observation(
     account_type: str | None,
     parser_id: str | None,
     success: bool,
+    expected_rows: int | None = None,
+    extracted_rows: int | None = None,
 ) -> None:
     normalized_bank = normalize_bank_hint(bank_code)
     normalized_account = _normalize_account_type_for_support(account_type)
@@ -372,6 +389,8 @@ async def _record_parser_support_observation(
             is_supported=success,
             observed_success_count=1 if success else 0,
             observed_failure_count=0 if success else 1,
+            observed_expected_rows=max(0, int(expected_rows or 0)),
+            observed_extracted_rows=max(0, int(extracted_rows or 0)),
         )
         db.add(row)
         return
@@ -382,6 +401,12 @@ async def _record_parser_support_observation(
         row.is_supported = True
     else:
         row.observed_failure_count = int(row.observed_failure_count or 0) + 1
+    row.observed_expected_rows = int(row.observed_expected_rows or 0) + max(
+        0, int(expected_rows or 0)
+    )
+    row.observed_extracted_rows = int(row.observed_extracted_rows or 0) + max(
+        0, int(extracted_rows or 0)
+    )
 
 
 def _normalize_account_type_for_support(account_type: str | None) -> str | None:
@@ -393,3 +418,40 @@ def _normalize_account_type_for_support(account_type: str | None) -> str | None:
     if normalized == "credit_card":
         return "credit_card"
     return None
+
+
+def _apply_post_parse_gates(
+    *,
+    statement: Statement,
+    integrity: dict | None,
+) -> dict:
+    quarantine_clear = int(statement.quarantined_row_count or 0) == 0
+
+    expected = int(statement.expected_row_count or 0)
+    yield_rate = float(statement.yield_rate) if statement.yield_rate is not None else None
+    if expected >= 5:
+        yield_rate_ok = (yield_rate or 0.0) >= settings.min_yield_rate_for_auto_promotion
+    else:
+        yield_rate_ok = True
+
+    integrity_ok = True
+    if statement.account_type == "credit_card" and settings.require_cc_integrity_ok_for_auto_promotion:
+        integrity_status = (integrity or {}).get("status")
+        integrity_ok = integrity_status in {"ok", "pass"}
+
+    all_pass = quarantine_clear and yield_rate_ok and integrity_ok
+
+    if statement.parse_status == "parsed" and not all_pass:
+        statement.parse_status = "review_required"
+
+    existing_errors = dict(statement.parse_errors or {})
+    existing_errors["promotion_gates"] = {
+        "quarantine_clear": quarantine_clear,
+        "yield_rate_ok": yield_rate_ok,
+        "credit_card_integrity_ok": integrity_ok,
+        "all_pass": all_pass,
+        "yield_rate": yield_rate,
+        "expected_row_count": expected,
+    }
+    statement.parse_errors = existing_errors
+    return existing_errors["promotion_gates"]

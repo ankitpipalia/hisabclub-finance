@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +40,12 @@ class ParsedTransaction(UUIDPrimaryKeyMixin, Base):
     dedupe_fingerprint: Mapped[str | None] = mapped_column(String(64))
 
     confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    is_quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reviewer_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id")
+    )
+    override_reason_code: Mapped[str | None] = mapped_column(String(60))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     extraction_method: Mapped[str] = mapped_column(
         String(20), nullable=False
     )  # 'template' | 'ocr' | 'llm' | 'sms_regex'

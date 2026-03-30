@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from urllib.parse import urlparse
 
@@ -39,6 +40,9 @@ class LLMClient:
         temperature: float = 0.1,
         timeout_sec: float = 120.0,
         max_attempts: int = 3,
+        model: str | None = None,
+        response_format: dict | None = None,
+        extra_body: dict | None = None,
     ) -> str:
         """Send a chat completion request and return the assistant's reply text.
 
@@ -51,7 +55,7 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -60,6 +64,10 @@ class LLMClient:
             # in message.content.
             "chat_template_kwargs": {"enable_thinking": False},
         }
+        if response_format:
+            payload["response_format"] = response_format
+        if extra_body:
+            payload.update(extra_body)
 
         safe_attempts = max(1, max_attempts)
         last_error: Exception | None = None
@@ -108,3 +116,62 @@ class LLMClient:
             last_error,
         )
         return ""
+
+    async def chat_json(
+        self,
+        messages: list[dict],
+        *,
+        schema: dict | None = None,
+        max_tokens: int = 2200,
+        temperature: float = 0.0,
+        timeout_sec: float = 120.0,
+        max_attempts: int = 2,
+        model: str | None = None,
+    ) -> dict | None:
+        response_format: dict | None = None
+        if settings.llm_json_mode:
+            if schema:
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "finance_statement_extraction",
+                        "schema": schema,
+                    },
+                }
+            else:
+                response_format = {"type": "json_object"}
+
+        text = await self.chat(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_sec=timeout_sec,
+            max_attempts=max_attempts,
+            model=model,
+            response_format=response_format,
+        )
+        if not text:
+            return None
+        cleaned = _clean_json_text(text)
+        try:
+            payload = json.loads(cleaned)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            logger.warning("LLM JSON decode failed for payload prefix=%s", cleaned[:180])
+        return None
+
+    def with_model(self, model: str) -> "LLMClient":
+        return LLMClient(base_url=self.base_url, api_key=self.api_key, model=model)
+
+
+def _clean_json_text(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+    if cleaned.startswith("json"):
+        cleaned = cleaned[4:].strip()
+    return cleaned

@@ -6,14 +6,21 @@ HisabClub is a privacy-first, self-hosted Indian personal finance ledger.
 - imports bank and credit card statements, including password-protected PDFs
 - supports local document-folder intake and manual uploads
 - builds customer-scoped local document knowledge from prior PDFs to improve later parsing
+- uses prompt-versioned iterative LLM extraction (chunked long statements + few-shot examples)
+- stitches cross-page PDF tables before LLM fallback to reduce dropped/duplicated rows
+- supports tier-2 extraction (deterministic table rows + LLM column mapping) before full JSON fallback
 - merges parsed transactions into a unified ledger with transfer reconciliation
 - enforces semantic statement dedup in addition to file-hash dedup
 - tracks matched debit/credit transfer legs in a dedicated `transfer_matches` table
+- applies confidence-gated partial promotion (low-confidence rows are quarantined for review)
 - provides budgets, bills, monthly insights, tax-compliance views, and statement PDF viewing
 - lets users delete statements and remove their local LLM memory, or re-review a stored statement with the local LLM
 - includes local password reset and authenticated password change flows
 - keeps document analysis local with an optional shared host LLM
+- supports model routing hooks (`small`/`default`/`large`) without changing business logic
 - uses durable PostgreSQL-backed extraction jobs with retry and DLQ requeue support
+- includes per-user fair queue selection for statement parsing jobs
+- enforces multi-gate auto-promotion checks (quarantine, yield-rate, optional CC integrity gate)
 
 ## Supported local topology
 - backend on host: `http://localhost:8356`
@@ -62,6 +69,7 @@ cd /home/ankit/Documents/local-llm
 ```
 
 The backend now stores local document chunks in PostgreSQL and retrieves same-user context during statement classification and fallback parsing. This is local retrieval, not a hosted vector service.
+Prompt templates and versions are in `backend/app/engines/llm/prompts.py`.
 
 ## Mobile debug
 ```bash
@@ -83,10 +91,24 @@ If a physical device is attached over USB, `make mobile-dev` applies `adb revers
 
 ## Upload pipeline and ops APIs
 - `POST /api/v1/upload/pdf` now enqueues parsing and immediately returns `status=reviewing`.
-- `GET /api/v1/upload/{pdf_id}/status` reports queue/statement state (reviewing, success, error, failed, duplicate).
+- `GET /api/v1/upload/{pdf_id}/status` reports queue/statement state (reviewing, success, review_required, error, failed, duplicate).
 - `GET /api/v1/upload/jobs/dlq` lists dead-letter parse jobs for the signed-in user.
 - `POST /api/v1/upload/jobs/{job_id}/requeue` retries a DLQ job after fixing password/parser issues.
-- `GET /api/v1/upload/parser-health` shows per-bank parser success/failure counters.
+- `GET /api/v1/upload/parser-health` shows per-bank parser success/failure plus yield-rate counters.
+
+## Local architecture POC scripts
+Run with backend virtualenv:
+```bash
+backend/.venv/bin/python scripts/poc_table_stitch_eval.py --limit 20
+backend/.venv/bin/python scripts/poc_llm_column_mapping_eval.py --limit 10
+backend/.venv/bin/python scripts/poc_ocr_compare.py --limit 20
+```
+
+## Review and reconciliation APIs
+- `GET /api/v1/reviews/tasks` lists open/resolved statement review tasks.
+- `POST /api/v1/reviews/tasks/{task_id}/resolve` resolves low-confidence quarantine with `promote` or `ignore`.
+- `POST /api/v1/transactions/reconcile-upi-failures` auto-links failed UPI debits with reversal credits.
+- `POST /api/v1/transactions/reclassify-transfer-payments` still handles card-payment transfer matching.
 
 ## Gmail encrypted PDFs
 - Gmail sync now enqueues parse jobs (it no longer parses attachments inline).
@@ -103,6 +125,12 @@ If a physical device is attached over USB, `make mobile-dev` applies `adb revers
   - worker loops set `app.worker_mode=1`
 - Runtime sessions switch to `hisabclub_rls` (`SET ROLE`) by default, so RLS is enforced even if the connection user is bootstrap/admin.
 - Config knobs: `DB_SET_ROLE_ON_CONNECT=true`, `DB_RLS_ROLE=hisabclub_rls`.
+
+## Storage tiering
+- Parsed statements can be moved from hot upload paths to cold archive storage automatically.
+- Config knobs:
+  - `COLD_STORAGE_ENABLED=true`
+  - `COLD_STORAGE_DIR=./uploads/cold`
 
 ## Verification
 - backend health: `curl http://localhost:8356/health`

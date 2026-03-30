@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 from app.engines.llm.client import LLMClient
 from app.engines.llm.knowledge import StatementKnowledgeContext
+from app.engines.llm.prompts import (
+    STATEMENT_CLASSIFICATION_PROMPT_VERSION,
+    build_statement_classification_system_prompt,
+)
 from app.engines.llm.sanitizer import sanitize_for_llm
 from app.engines.parser.hints import normalize_bank_hint
 
@@ -23,6 +26,7 @@ async def llm_classify_statement(
     client: LLMClient,
     page_text: str,
     *,
+    model: str | None = None,
     knowledge_context: StatementKnowledgeContext | None = None,
     bank_hint: str | None = None,
     account_type_hint: str | None = None,
@@ -32,16 +36,12 @@ async def llm_classify_statement(
     messages = [
         {
             "role": "system",
-            "content": (
-                "You classify Indian financial statements. "
-                "Use the current document text as the primary signal. "
-                "Retrieved customer context is supportive only and must never override the current document. "
-                'Return strict JSON: {"bank_name":"string|null","account_type":"credit_card|savings|current|unknown","confidence":0..1,"reason":"<=25 words"}'
-            ),
+            "content": build_statement_classification_system_prompt(),
         },
         {
             "role": "user",
             "content": (
+                f"Prompt version: {STATEMENT_CLASSIFICATION_PROMPT_VERSION}\n"
                 f"User hint bank: {bank_hint or 'none'}\n"
                 f"User hint account type: {account_type_hint or 'none'}\n"
                 f"Retrieved customer context:\n{context_text or 'none'}\n\n"
@@ -49,18 +49,25 @@ async def llm_classify_statement(
             ),
         },
     ]
-    response = await client.chat(
+    payload = await client.chat_json(
         messages,
-        max_tokens=220,
-        temperature=0.0,
-        timeout_sec=25.0,
-        max_attempts=1,
+        model=model,
+        max_tokens=260,
+        timeout_sec=30.0,
+        max_attempts=2,
+        schema={
+            "type": "object",
+            "properties": {
+                "bank_name": {"type": ["string", "null"]},
+                "account_type": {"type": "string"},
+                "confidence": {"type": "number"},
+                "reason": {"type": ["string", "null"]},
+            },
+            "required": ["bank_name", "account_type", "confidence"],
+            "additionalProperties": False,
+        },
     )
-    if not response:
-        return None
-    try:
-        payload = json.loads(_clean_json(response))
-    except json.JSONDecodeError:
+    if not payload:
         return None
 
     account_type = str(payload.get("account_type", "")).strip().lower()
@@ -82,12 +89,3 @@ async def llm_classify_statement(
         confidence=confidence,
         reason=reason,
     )
-
-
-def _clean_json(text: str) -> str:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    return cleaned.replace("json", "", 1).strip()

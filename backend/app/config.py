@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:8472/v1"
     llm_api_key: str = ""
     llm_model: str = "Qwen3.5-27B-Q3_K_M.gguf"
+    llm_small_model: str = ""
+    llm_large_model: str = ""
+    llm_router_enabled: bool = True
+    llm_json_mode: bool = True
+    llm_prompt_version_statement_extraction: str = "statement_extraction_v2"
+    llm_prompt_version_statement_classification: str = "statement_classification_v2"
+    llm_iterative_chunk_chars: int = 5200
+    llm_iterative_overlap_lines: int = 6
+    llm_max_chunk_count: int = 12
+    promotion_confidence_threshold: float = 0.75
+    min_yield_rate_for_auto_promotion: float = 0.55
+    require_cc_integrity_ok_for_auto_promotion: bool = False
     category_web_lookup_enabled: bool = False
     category_web_lookup_timeout_sec: float = 5.0
 
@@ -42,6 +54,8 @@ class Settings(BaseSettings):
     local_only_mode: bool = True
     local_allowed_roots: str = "/app/uploads,/home/ankit/Documents,/home/ankit/Downloads"
     local_allowed_llm_hosts: str = "localhost,127.0.0.1,::1"
+    cold_storage_enabled: bool = True
+    cold_storage_dir: str = "./uploads/cold"
 
     # Gmail Integration
     gmail_client_id: str = ""

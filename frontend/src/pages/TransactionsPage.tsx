@@ -50,6 +50,8 @@ export default function TransactionsPage() {
   const [autoCategorizeInfo, setAutoCategorizeInfo] = useState('');
   const [reclassifying, setReclassifying] = useState(false);
   const [reclassifyInfo, setReclassifyInfo] = useState('');
+  const [reconcilingUpi, setReconcilingUpi] = useState(false);
+  const [upiInfo, setUpiInfo] = useState('');
 
   const perPage = 25;
 
@@ -133,6 +135,26 @@ export default function TransactionsPage() {
     }
   };
 
+  const handleUpiReconcile = async () => {
+    setReconcilingUpi(true);
+    try {
+      const result = await api.reconcileUpiFailures({
+        days: 730,
+        max_gap_days: 3,
+        limit: 8000,
+      });
+      setUpiInfo(
+        `UPI failure reconciliation: ${result.matched_pairs} pairs matched, ${result.updated_transactions} rows updated.`,
+      );
+      await fetchTransactions();
+    } catch (err) {
+      console.error('Failed UPI reconciliation:', err);
+      setUpiInfo('UPI reconciliation failed. Check backend logs.');
+    } finally {
+      setReconcilingUpi(false);
+    }
+  };
+
   const totalPages = Math.ceil(total / perPage);
 
   const formatAmount = (amount: number, dir: string) => {
@@ -160,6 +182,14 @@ export default function TransactionsPage() {
           <p className="hc-page-subtitle">Search and filter normalized debit/credit entries across all sources.</p>
         </div>
         <div className="hc-inline-actions">
+          <button
+            type="button"
+            onClick={handleUpiReconcile}
+            disabled={reconcilingUpi}
+            className="hc-btn hc-btn-outline"
+          >
+            {reconcilingUpi ? 'Reconciling UPI...' : 'Reconcile UPI Failures'}
+          </button>
           <button
             type="button"
             onClick={handleAiTransferMatch}
@@ -245,6 +275,7 @@ export default function TransactionsPage() {
 
       {autoCategorizeInfo && <div className="hc-msg hc-msg-ok">{autoCategorizeInfo}</div>}
       {reclassifyInfo && <div className="hc-msg hc-msg-ok">{reclassifyInfo}</div>}
+      {upiInfo && <div className="hc-msg hc-msg-ok">{upiInfo}</div>}
 
       <section className="hc-table-wrap">
         {loading ? (

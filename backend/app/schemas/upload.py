@@ -59,4 +59,7 @@ class ParserHealthItemResponse(BaseModel):
     parser_id: str | None = None
     observed_success_count: int
     observed_failure_count: int
+    observed_expected_rows: int = 0
+    observed_extracted_rows: int = 0
     success_rate: float
+    yield_rate: float | None = None

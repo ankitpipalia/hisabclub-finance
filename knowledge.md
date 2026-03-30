@@ -120,6 +120,52 @@ The Docker `api` service is not the primary supported path right now. The suppor
   - worker bypass via `app.worker_mode=1`
 - Added runtime DB-role switch (`SET ROLE hisabclub_rls`) in API/worker sessions so RLS remains effective even if the bootstrap user has elevated privileges.
 
+## 2026-03-30 Phase 2 Implementation (Architecture-Update)
+
+- LLM orchestration upgraded for long-statement reliability:
+  - iterative chunk extraction in `app/engines/llm/parse_fallback.py`
+  - prompt templates and few-shot bank examples in `app/engines/llm/prompts.py`
+  - deterministic model-routing hooks in `app/engines/llm/router.py`
+  - JSON-structured response support in `LLMClient.chat_json()`
+- Added extraction quality controls and partial promotion:
+  - `PROMOTION_CONFIDENCE_THRESHOLD` now gates canonical promotion
+  - low-confidence rows are stored as quarantined `parsed_transactions`
+  - `review_tasks` table added with APIs:
+    - `GET /api/v1/reviews/tasks`
+    - `POST /api/v1/reviews/tasks/{task_id}/resolve`
+  - statement-level quality metrics added:
+    - `expected_row_count`, `extracted_row_count`, `promoted_row_count`, `quarantined_row_count`, `yield_rate`
+- Added yield-rate observability:
+  - parser pre-estimate via `estimate_expected_transaction_rows()`
+  - parser-health now reports expected/extracted rows and yield-rate per bank/account type
+- Added UPI failed-payment reconciliation:
+  - engine: `app/engines/ledger/upi_reconciliation.py`
+  - API: `POST /api/v1/transactions/reconcile-upi-failures`
+  - auto-run after statement parse jobs
+- Added queue fairness and storage tiering:
+  - per-user fair job selection in `claim_next_job()` (prevents one-user starvation)
+  - hot→cold PDF movement in `app/engines/storage/tiering.py`
+  - `raw_pdfs` now tracks `storage_tier` and `cold_storage_path`
+- Migration `f9a0b1c2d3e4` applied successfully and is the current DB head.
+
+## 2026-03-30 Remaining Gap Closure (Architecture-Update Completion)
+
+- Added **cross-page table stitching path** via `extract_stitched_table_rows()` and wired it into statement parsing before LLM fallback.
+- Added **tier-2 extraction path** in `llm_parse_statement()`:
+  - deterministic table rows
+  - LLM column mapping only
+  - deterministic row-to-transaction mapping
+  - fallback to iterative full extraction if mapping is insufficient
+- Added **post-parse multi-gate escalation** in worker:
+  - quarantine gate
+  - yield-rate gate (`MIN_YIELD_RATE_FOR_AUTO_PROMOTION`)
+  - optional credit-card integrity gate (`REQUIRE_CC_INTEGRITY_OK_FOR_AUTO_PROMOTION`)
+- Added local **POC/eval scripts** under `scripts/`:
+  - `poc_table_stitch_eval.py`
+  - `poc_llm_column_mapping_eval.py`
+  - `poc_ocr_compare.py`
+- Verified the POC scripts execute locally with `backend/.venv/bin/python ...` and report JSON output.
+
 ## Directory Structure
 
 ```

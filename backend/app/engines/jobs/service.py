@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import asc, select
+from sqlalchemy import asc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.jobs.notifier import publish_job_event
@@ -50,18 +50,74 @@ async def claim_next_job(
     worker_id: str,
 ) -> ExtractionJob | None:
     now = _utcnow()
+    queued_by_user = (
+        select(
+            ExtractionJob.user_id.label("user_id"),
+            func.min(ExtractionJob.created_at).label("oldest_created_at"),
+        )
+        .where(
+            ExtractionJob.status == "queued",
+            ExtractionJob.next_run_at <= now,
+        )
+        .group_by(ExtractionJob.user_id)
+        .subquery()
+    )
+    running_by_user = (
+        select(
+            ExtractionJob.user_id.label("user_id"),
+            func.count(ExtractionJob.id).label("running_count"),
+        )
+        .where(ExtractionJob.status == "running")
+        .group_by(ExtractionJob.user_id)
+        .subquery()
+    )
+    selected_user = (
+        await db.execute(
+            select(queued_by_user.c.user_id)
+            .select_from(
+                queued_by_user.outerjoin(
+                    running_by_user,
+                    queued_by_user.c.user_id == running_by_user.c.user_id,
+                )
+            )
+            .order_by(
+                func.coalesce(running_by_user.c.running_count, 0).asc(),
+                queued_by_user.c.oldest_created_at.asc(),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if selected_user is None:
+        return None
+
     row = (
         await db.execute(
             select(ExtractionJob)
-            .where(ExtractionJob.status == "queued")
-            .where(ExtractionJob.next_run_at <= now)
+            .where(
+                ExtractionJob.status == "queued",
+                ExtractionJob.next_run_at <= now,
+                ExtractionJob.user_id == selected_user,
+            )
             .order_by(ExtractionJob.priority.desc(), asc(ExtractionJob.created_at))
             .with_for_update(skip_locked=True)
             .limit(1)
         )
     ).scalar_one_or_none()
     if row is None:
-        return None
+        row = (
+            await db.execute(
+                select(ExtractionJob)
+                .where(
+                    ExtractionJob.status == "queued",
+                    ExtractionJob.next_run_at <= now,
+                )
+                .order_by(ExtractionJob.priority.desc(), asc(ExtractionJob.created_at))
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
 
     row.status = "running"
     row.current_stage = "extracting"

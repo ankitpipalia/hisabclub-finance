@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { FileText, Calendar, CreditCard } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { Statement, StatementIntegrityResponse } from '../api/client';
+import type { ReviewTask, Statement, StatementIntegrityResponse } from '../api/client';
 
 export default function StatementsPage() {
   const [statements, setStatements] = useState<Statement[]>([]);
@@ -10,6 +10,8 @@ export default function StatementsPage() {
   const [openingPdfId, setOpeningPdfId] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [resolvingTaskId, setResolvingTaskId] = useState<string | null>(null);
+  const [reviewTaskByStatement, setReviewTaskByStatement] = useState<Record<string, ReviewTask>>({});
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -36,6 +38,12 @@ export default function StatementsPage() {
         if (report) map[id] = report;
       }
       setIntegrityById(map);
+      const tasks = await api.getReviewTasks('open', 200);
+      const taskMap: Record<string, ReviewTask> = {};
+      for (const task of tasks) {
+        taskMap[task.statement_id] = task;
+      }
+      setReviewTaskByStatement(taskMap);
     } catch (err) {
       console.error('Failed to fetch statements:', err);
     } finally {
@@ -124,6 +132,22 @@ export default function StatementsPage() {
     }
   };
 
+  const handleResolveReview = async (statement: Statement, action: 'promote' | 'ignore') => {
+    const task = reviewTaskByStatement[statement.id];
+    if (!task) return;
+    try {
+      setActionError(null);
+      setResolvingTaskId(task.id);
+      await api.resolveReviewTask(task.id, action);
+      await refreshStatements();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Review resolution failed.';
+      setActionError(message);
+    } finally {
+      setResolvingTaskId(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="hc-page">
@@ -175,6 +199,12 @@ export default function StatementsPage() {
                         {formatDate(stmt.statement_period_start)} - {formatDate(stmt.statement_period_end)}
                       </span>
                       <span>{stmt.transaction_count ?? 0} transactions</span>
+                      {stmt.yield_rate !== null && stmt.yield_rate !== undefined && (
+                        <span>Yield {(stmt.yield_rate * 100).toFixed(1)}%</span>
+                      )}
+                      {(stmt.quarantined_row_count ?? 0) > 0 && (
+                        <span>{stmt.quarantined_row_count} quarantined</span>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -238,6 +268,26 @@ export default function StatementsPage() {
                 >
                   {deletingId === stmt.id ? 'Deleting...' : 'Delete'}
                 </button>
+                {stmt.parse_status === 'review_required' && reviewTaskByStatement[stmt.id] && (
+                  <>
+                    <button
+                      className="hc-btn hc-btn-solid"
+                      onClick={() => handleResolveReview(stmt, 'promote')}
+                      disabled={resolvingTaskId === reviewTaskByStatement[stmt.id].id}
+                    >
+                      {resolvingTaskId === reviewTaskByStatement[stmt.id].id
+                        ? 'Applying...'
+                        : 'Promote Quarantine'}
+                    </button>
+                    <button
+                      className="hc-btn hc-btn-outline"
+                      onClick={() => handleResolveReview(stmt, 'ignore')}
+                      disabled={resolvingTaskId === reviewTaskByStatement[stmt.id].id}
+                    >
+                      Ignore Quarantine
+                    </button>
+                  </>
+                )}
               </div>
 
               {integrityById[stmt.id] && (

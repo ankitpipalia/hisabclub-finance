@@ -64,3 +64,9 @@ class ReclassifyTransferResponse(BaseModel):
     matched_credit_card_pairs: int
     llm_checked: int
     llm_promoted: int
+
+
+class UpiReconcileResponse(BaseModel):
+    scanned: int
+    matched_pairs: int
+    updated_transactions: int

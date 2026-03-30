@@ -15,6 +15,7 @@ from app.models.password_reset_token import PasswordResetToken
 from app.models.parsed_transaction import ParsedTransaction
 from app.models.raw_pdf import RawPdf
 from app.models.raw_sms import RawSms
+from app.models.review_task import ReviewTask
 from app.models.statement import Statement
 from app.models.statement_period_coverage import StatementPeriodCoverage
 from app.models.sync_cursor import SyncCursor
@@ -42,6 +43,7 @@ __all__ = [
     "ParsedTransaction",
     "RawPdf",
     "RawSms",
+    "ReviewTask",
     "RecurringPattern",
     "Statement",
     "StatementPeriodCoverage",

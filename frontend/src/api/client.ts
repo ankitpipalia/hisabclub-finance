@@ -263,6 +263,22 @@ class ApiClient {
     );
   }
 
+  async reconcileUpiFailures(params?: {
+    days?: number;
+    max_gap_days?: number;
+    limit?: number;
+  }) {
+    const query = new URLSearchParams();
+    if (params?.days !== undefined) query.set('days', String(params.days));
+    if (params?.max_gap_days !== undefined) query.set('max_gap_days', String(params.max_gap_days));
+    if (params?.limit !== undefined) query.set('limit', String(params.limit));
+    const qs = query.toString();
+    return this.request<UpiReconcileResponse>(
+      `/transactions/reconcile-upi-failures${qs ? `?${qs}` : ''}`,
+      { method: 'POST' },
+    );
+  }
+
   async updateTransaction(txnId: string, data: Record<string, unknown>) {
     return this.request<Transaction>(`/transactions/${txnId}`, {
       method: 'PATCH',
@@ -420,6 +436,23 @@ class ApiClient {
   async getParserSupportQueue(limit: number = 200) {
     return this.request<ParserSupportQueueResponse>(`/imports/parser-support-queue?limit=${limit}`);
   }
+
+  async getReviewTasks(statusFilter: string = 'open', limit: number = 50) {
+    const query = new URLSearchParams();
+    if (statusFilter) query.set('status', statusFilter);
+    query.set('limit', String(limit));
+    return this.request<ReviewTask[]>(`/reviews/tasks?${query.toString()}`);
+  }
+
+  async resolveReviewTask(taskId: string, action: 'promote' | 'ignore', reasonCode?: string) {
+    return this.request<ResolveReviewTaskResult>(`/reviews/tasks/${taskId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        action,
+        reason_code: reasonCode ?? null,
+      }),
+    });
+  }
 }
 
 // ─── Types ───
@@ -439,6 +472,11 @@ export interface Statement {
   credit_limit: number | null;
   parse_status: string;
   transaction_count: number | null;
+  expected_row_count: number | null;
+  extracted_row_count: number | null;
+  promoted_row_count: number | null;
+  quarantined_row_count: number | null;
+  yield_rate: number | null;
   source_type: string | null;
   is_reprocess: boolean;
   reprocess_count: number;
@@ -522,6 +560,33 @@ export interface ReclassifyTransferResponse {
   matched_credit_card_pairs: number;
   llm_checked: number;
   llm_promoted: number;
+}
+
+export interface UpiReconcileResponse {
+  scanned: number;
+  matched_pairs: number;
+  updated_transactions: number;
+}
+
+export interface ReviewTask {
+  id: string;
+  statement_id: string;
+  task_type: string;
+  status: string;
+  reason_code: string;
+  title: string;
+  details: string | null;
+  payload_json: Record<string, unknown> | null;
+  resolved_by_user_id: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResolveReviewTaskResult {
+  task: ReviewTask;
+  promoted_count: number;
+  ignored_count: number;
 }
 
 export interface TransactionFilters {

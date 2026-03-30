@@ -10,6 +10,7 @@ from app.api.v1 import (
     imports,
     insights,
     merchants,
+    reviews,
     sms,
     statements,
     transactions,
@@ -31,3 +32,4 @@ api_router.include_router(bills.router, prefix="/bills", tags=["bills"])
 api_router.include_router(export.router, prefix="/export", tags=["export"])
 api_router.include_router(gmail.router, prefix="/gmail", tags=["gmail"])
 api_router.include_router(imports.router, prefix="/imports", tags=["imports"])
+api_router.include_router(reviews.router, prefix="/reviews", tags=["reviews"])

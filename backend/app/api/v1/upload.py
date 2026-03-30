@@ -37,7 +37,9 @@ def _map_statement_parse_status_to_review_status(parse_status: str | None) -> st
         return "reviewing"
     if normalized == "parsed":
         return "success"
-    if normalized in {"partial", "review_required"}:
+    if normalized == "review_required":
+        return "review_required"
+    if normalized == "partial":
         return "error"
     if normalized == "failed":
         return "failed"
@@ -60,6 +62,11 @@ def _job_review_state(job: ExtractionJob) -> tuple[str, str]:
             tx_count = int(result.get("transaction_count") or 0)
             return "success", f"Parsed {tx_count} transactions."
         if result_status in {"partial", "review_required"}:
+            if result_status == "review_required":
+                return (
+                    "review_required",
+                    "Review required. Some low-confidence transactions were quarantined.",
+                )
             return (
                 "error",
                 "Review required. Some transactions could not be validated automatically.",
@@ -141,6 +148,11 @@ async def list_recent_uploads(user: CurrentUser, db: DbSession, limit: int = 20)
                     f"Review required for {statement.bank_name}. "
                     f"Parser {statement.parser_used} extracted "
                     f"{statement.transaction_count or 0} transactions."
+                )
+            elif item_status == "review_required":
+                message = (
+                    f"Review required for {statement.bank_name}. "
+                    f"{statement.quarantined_row_count or 0} transaction(s) are in quarantine."
                 )
             elif item_status == "failed":
                 message = str(statement.parse_errors or "Statement review failed")
@@ -419,6 +431,11 @@ async def get_upload_status(pdf_id: str, user: CurrentUser, db: DbSession):
             message = "Document is under review by the local LLM. Please wait."
         elif status_value == "success":
             message = f"Parsed {statement.transaction_count or 0} transactions."
+        elif status_value == "review_required":
+            message = (
+                "Document parsed with quarantine. "
+                f"{statement.quarantined_row_count or 0} transaction(s) need review."
+            )
         elif status_value == "error":
             message = "Review required before promotion to canonical ledger."
         else:
@@ -433,7 +450,7 @@ async def get_upload_status(pdf_id: str, user: CurrentUser, db: DbSession):
             status=status_value,
             statement_id=str(statement.id),
             transaction_count=statement.transaction_count,
-            error=None if status_value in {"reviewing", "success"} else message,
+            error=None if status_value in {"reviewing", "success", "review_required"} else message,
             bank_name=statement.bank_name,
             message=message,
         )
@@ -525,6 +542,9 @@ async def parser_health(user: CurrentUser, db: DbSession):
         failure = int(row.observed_failure_count or 0)
         total = success + failure
         success_rate = float(success / total) if total else 0.0
+        expected_rows = int(row.observed_expected_rows or 0)
+        extracted_rows = int(row.observed_extracted_rows or 0)
+        yield_rate = (float(extracted_rows / expected_rows) if expected_rows > 0 else None)
         result.append(
             ParserHealthItemResponse(
                 bank_code=row.bank_code,
@@ -532,7 +552,10 @@ async def parser_health(user: CurrentUser, db: DbSession):
                 parser_id=row.parser_id,
                 observed_success_count=success,
                 observed_failure_count=failure,
+                observed_expected_rows=expected_rows,
+                observed_extracted_rows=extracted_rows,
                 success_rate=success_rate,
+                yield_rate=yield_rate,
             )
         )
     return result

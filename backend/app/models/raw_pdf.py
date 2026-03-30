@@ -21,6 +21,8 @@ class RawPdf(UUIDPrimaryKeyMixin, Base):
     file_hash_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     semantic_fingerprint: Mapped[str | None] = mapped_column(String(64))
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="hot")
+    cold_storage_path: Mapped[str | None] = mapped_column(Text)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_password_protected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mime_type: Mapped[str] = mapped_column(String(100), default="application/pdf", nullable=False)

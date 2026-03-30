@@ -21,6 +21,11 @@ class StatementResponse(BaseModel):
     parser_used: str
     parse_status: str
     transaction_count: int | None
+    expected_row_count: int | None = None
+    extracted_row_count: int | None = None
+    promoted_row_count: int | None = None
+    quarantined_row_count: int | None = None
+    yield_rate: float | None = None
     source_type: str | None = None
     is_reprocess: bool = False
     reprocess_count: int = 1

@@ -21,6 +21,8 @@ class InstitutionParserSupport(UUIDPrimaryKeyMixin, Base):
     expected_layout_signatures: Mapped[dict | None] = mapped_column(JSONB)
     observed_success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     observed_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    observed_expected_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    observed_extracted_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

@@ -68,3 +68,32 @@ async def test_llm_client_disables_thinking_mode(monkeypatch):
     assert _FakeAsyncClient.captured["json"]["chat_template_kwargs"] == {
         "enable_thinking": False
     }
+
+
+@pytest.mark.asyncio
+async def test_llm_client_chat_json_sets_response_format(monkeypatch):
+    from app.engines.llm import client as llm_client_module
+
+    monkeypatch.setattr(llm_client_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    client = LLMClient(
+        base_url="http://localhost:8094/v1",
+        api_key="",
+        model="Qwen3.5-27B-Q3_K_M.gguf",
+    )
+
+    payload = await client.chat_json(
+        messages=[{"role": "user", "content": "test"}],
+        schema={
+            "type": "object",
+            "properties": {"ok": {"type": "string"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        },
+    )
+
+    assert payload is None or isinstance(payload, dict)
+    assert _FakeAsyncClient.captured["json"]["response_format"]["type"] in {
+        "json_object",
+        "json_schema",
+    }

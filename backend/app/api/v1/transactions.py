@@ -7,6 +7,7 @@ from app.dependencies import CurrentUser, DbSession
 from app.engines.ledger.account_labels import bank_account_label
 from app.engines.ledger.category_enrichment import infer_uncategorized_category
 from app.engines.ledger.transfer_reclassifier import reclassify_transfer_payments_for_user
+from app.engines.ledger.upi_reconciliation import reconcile_upi_failures_for_user
 from app.models.canonical_transaction import CanonicalTransaction
 from app.models.category import Category
 from app.models.parsed_transaction import ParsedTransaction
@@ -19,6 +20,7 @@ from app.schemas.transaction import (
     TransactionResponse,
     TransactionSourceResponse,
     TransactionUpdateRequest,
+    UpiReconcileResponse,
 )
 
 router = APIRouter()
@@ -113,6 +115,30 @@ async def reclassify_transfer_payments(
         matched_credit_card_pairs=result.matched_credit_card_pairs,
         llm_checked=result.llm_checked,
         llm_promoted=result.llm_promoted,
+    )
+
+
+@router.post("/reconcile-upi-failures", response_model=UpiReconcileResponse)
+async def reconcile_upi_failures(
+    user: CurrentUser,
+    db: DbSession,
+    days: int = Query(365, ge=30, le=3650),
+    max_gap_days: int = Query(3, ge=0, le=10),
+    limit: int = Query(5000, ge=100, le=20000),
+):
+    result = await reconcile_upi_failures_for_user(
+        db=db,
+        user_id=user.id,
+        days=days,
+        max_gap_days=max_gap_days,
+        limit=limit,
+    )
+    if result.updated_transactions > 0:
+        await db.commit()
+    return UpiReconcileResponse(
+        scanned=result.scanned,
+        matched_pairs=result.matched_pairs,
+        updated_transactions=result.updated_transactions,
     )
 
 

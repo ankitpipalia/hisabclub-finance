@@ -23,6 +23,7 @@ from app.engines.parser.hints import (
 )
 from app.models.parsed_transaction import ParsedTransaction
 from app.models.raw_pdf import RawPdf
+from app.models.review_task import ReviewTask
 from app.models.statement import Statement
 
 if TYPE_CHECKING:
@@ -121,6 +122,9 @@ def detect_parser(
     text: str,
     bank_hint: str | None = None,
     account_type_hint: str | None = None,
+    *,
+    strict_bank_hint: bool = False,
+    strict_account_type_hint: bool = False,
 ) -> StatementParser | None:
     """Find the right parser for a given PDF text.
 
@@ -147,7 +151,11 @@ def detect_parser(
         if bank_hint:
             hinted = [p for p in _registry if p.bank_name.upper() == bank_hint.upper()]
             if hinted:
-                hinted = [parser for parser in hinted if _matches_account_type(parser)] or hinted
+                hinted_by_type = [parser for parser in hinted if _matches_account_type(parser)]
+                if hinted_by_type:
+                    hinted = hinted_by_type
+                elif strict_account_type_hint and account_type_hint and account_type_hint != "auto":
+                    return None
                 if account_type_hint == "credit_card":
                     for parser in hinted:
                         if parser.account_type == "credit_card":
@@ -165,14 +173,43 @@ def detect_parser(
                 return hinted[0]
         return None
 
-    filtered = [candidate for candidate in candidates if _matches_account_type(candidate)]
-    if filtered:
-        candidates = filtered
+    filtered_by_type = [candidate for candidate in candidates if _matches_account_type(candidate)]
+    if filtered_by_type:
+        candidates = filtered_by_type
+    elif strict_account_type_hint and account_type_hint and account_type_hint != "auto":
+        candidates = []
 
-    if bank_hint and len(candidates) > 1:
-        for c in candidates:
-            if c.bank_name.upper() == bank_hint.upper():
-                return c
+    if bank_hint:
+        filtered_by_bank = [c for c in candidates if c.bank_name.upper() == bank_hint.upper()]
+        if filtered_by_bank:
+            candidates = filtered_by_bank
+        elif strict_bank_hint:
+            candidates = []
+
+    if not candidates:
+        if bank_hint:
+            hinted = [p for p in _registry if p.bank_name.upper() == bank_hint.upper()]
+            if hinted:
+                hinted_by_type = [parser for parser in hinted if _matches_account_type(parser)]
+                if hinted_by_type:
+                    hinted = hinted_by_type
+                elif strict_account_type_hint and account_type_hint and account_type_hint != "auto":
+                    return None
+                if account_type_hint == "credit_card":
+                    for parser in hinted:
+                        if parser.account_type == "credit_card":
+                            return parser
+                if account_type_hint == "bank_account":
+                    for parser in hinted:
+                        if parser.account_type != "credit_card":
+                            return parser
+                has_card_cues = "credit card" in text.lower() or "card statement" in text.lower()
+                preferred_type = "credit_card" if has_card_cues else "savings"
+                for parser in hinted:
+                    if parser.account_type == preferred_type:
+                        return parser
+                return hinted[0]
+        return None
 
     return candidates[0]
 
@@ -196,7 +233,12 @@ async def parse_statement(
 ) -> Statement:
     """Main entry point: decrypt PDF, detect parser, extract data, save to DB."""
     from app.config import settings
-    from app.engines.parser.pdf_utils import decrypt_pdf, extract_text
+    from app.engines.parser.pdf_utils import (
+        decrypt_pdf,
+        estimate_expected_transaction_rows,
+        extract_stitched_table_rows,
+        extract_text,
+    )
 
     # Ensure parsers are registered
     _ensure_parsers_loaded()
@@ -229,6 +271,11 @@ async def parse_statement(
         )
 
     full_text = "\n".join(pages)
+    expected_row_count = estimate_expected_transaction_rows(pdf_bytes, pages)
+    try:
+        stitched_table_rows = extract_stitched_table_rows(pdf_bytes)
+    except Exception:
+        stitched_table_rows = []
     text_bank_hint = infer_bank_hint_from_text(full_text)
     text_account_type_hint = infer_account_type_hint_from_text(full_text)
 
@@ -244,20 +291,37 @@ async def parse_statement(
 
     # Step 3: Detect parser
     hints = normalize_parser_hints(bank_hint=bank_hint, account_type_hint=account_type_hint)
+    user_bank_hint = hints.bank_hint
+    user_account_type_hint = hints.account_type_hint
     bank_hint = hints.bank_hint or text_bank_hint
     account_type_hint = hints.account_type_hint or text_account_type_hint
     knowledge_context = None
     llm_client = None
     llm_classification = None
+    llm_extraction_model: str | None = None
+    llm_classification_model: str | None = None
     if settings.llm_enabled:
         from app.engines.llm.client import LLMClient
         from app.engines.llm.knowledge import build_statement_knowledge_context
+        from app.engines.llm.router import (
+            route_model_for_task,
+            score_statement_difficulty,
+        )
         from app.engines.llm.statement_classifier import llm_classify_statement
 
+        difficulty = score_statement_difficulty(text=full_text, page_count=len(pages))
+        llm_extraction_model = route_model_for_task(
+            task="statement_extraction",
+            difficulty=difficulty,
+        )
+        llm_classification_model = route_model_for_task(
+            task="statement_classification",
+            difficulty=difficulty,
+        )
         llm_client = LLMClient(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
-            model=settings.llm_model,
+            model=llm_extraction_model,
         )
         knowledge_context = await build_statement_knowledge_context(
             db=db,
@@ -271,6 +335,7 @@ async def parse_statement(
             llm_classification = await llm_classify_statement(
                 llm_client,
                 full_text,
+                model=llm_classification_model,
                 knowledge_context=knowledge_context,
                 bank_hint=bank_hint,
                 account_type_hint=account_type_hint,
@@ -283,7 +348,13 @@ async def parse_statement(
                     elif llm_classification.account_type in {"savings", "current"}:
                         account_type_hint = "bank_account"
 
-    parser = detect_parser(full_text, bank_hint, account_type_hint)
+    parser = detect_parser(
+        full_text,
+        bank_hint,
+        account_type_hint,
+        strict_bank_hint=bool(user_bank_hint),
+        strict_account_type_hint=bool(user_account_type_hint and user_account_type_hint != "auto"),
+    )
     extracted: ExtractedStatement
     if prefer_llm and settings.llm_enabled:
         from app.engines.llm.parse_fallback import llm_parse_statement
@@ -291,9 +362,11 @@ async def parse_statement(
         llm_result = await llm_parse_statement(
             llm_client,
             full_text,
+            model=llm_extraction_model,
             bank_hint=bank_hint,
             account_type_hint=account_type_hint,
             knowledge_context=knowledge_context,
+            table_rows=stitched_table_rows,
         )
         if llm_result and llm_result.transactions:
             llm_result.parser_id = "llm_rereview"
@@ -305,7 +378,15 @@ async def parse_statement(
                 "Preferred LLM re-review produced no valid transactions for pdf_id=%s; falling back to parser detection.",
                 pdf_id,
             )
-            parser = detect_parser(full_text, bank_hint, account_type_hint)
+            parser = detect_parser(
+                full_text,
+                bank_hint,
+                account_type_hint,
+                strict_bank_hint=bool(user_bank_hint),
+                strict_account_type_hint=bool(
+                    user_account_type_hint and user_account_type_hint != "auto"
+                ),
+            )
     else:
         extracted = None  # type: ignore[assignment]
     if parser is None and not prefer_llm:
@@ -326,9 +407,11 @@ async def parse_statement(
                 llm_result = await llm_parse_statement(
                     llm_client,
                     full_text,
+                    model=llm_extraction_model,
                     bank_hint=bank_hint,
                     account_type_hint=account_type_hint,
                     knowledge_context=knowledge_context,
+                    table_rows=stitched_table_rows,
                 )
             except Exception as exc:
                 raise ValueError(
@@ -426,9 +509,11 @@ async def parse_statement(
                         llm_result = await llm_parse_statement(
                             llm_client,
                             full_text,
+                            model=llm_extraction_model,
                             bank_hint=bank_hint or extracted.bank_name,
                             account_type_hint=account_type_hint,
                             knowledge_context=knowledge_context,
+                            table_rows=stitched_table_rows,
                         )
                         if llm_result and llm_result.transactions:
                             logger.info(
@@ -486,6 +571,34 @@ async def parse_statement(
                         "Enable LLM_ENABLED=true in configuration to try AI-based extraction."
                     )
 
+    # Honor explicit user hints to avoid mislabeling statements in ambiguous PDFs.
+    if user_bank_hint:
+        extracted_bank = (extracted.bank_name or "").strip().upper()
+        if extracted_bank != user_bank_hint:
+            if extracted_bank:
+                extracted.warnings.append(
+                    f"Bank hint override applied: detected {extracted_bank}, using {user_bank_hint}."
+                )
+            extracted.bank_name = user_bank_hint
+
+    if user_account_type_hint == "credit_card" and extracted.account_type != "credit_card":
+        extracted.warnings.append(
+            f"Account type hint override applied: detected {extracted.account_type}, using credit_card."
+        )
+        extracted.account_type = "credit_card"
+    elif user_account_type_hint == "bank_account":
+        normalized_type = (extracted.account_type or "").strip().lower()
+        if normalized_type == "credit_card":
+            extracted.warnings.append(
+                "Account type hint override applied: detected credit_card, using savings."
+            )
+            extracted.account_type = "savings"
+        elif normalized_type not in {"savings", "current"}:
+            extracted.warnings.append(
+                f"Account type hint override applied: detected {normalized_type or 'unknown'}, using savings."
+            )
+            extracted.account_type = "savings"
+
     semantic_fingerprint = build_statement_semantic_fingerprint(
         user_id=user_id,
         institution_name=extracted.bank_name,
@@ -526,7 +639,19 @@ async def parse_statement(
         if superseded_statement is not None:
             superseded_statement.is_active = False
 
-        parse_status = "parsed" if extracted.transactions else "partial"
+        confidence_threshold = max(0.0, min(1.0, settings.promotion_confidence_threshold))
+        extracted_count = len(extracted.transactions)
+        quarantined_count = sum(
+            1 for txn in extracted.transactions if (txn.confidence or 0.0) < confidence_threshold
+        )
+        promoted_target = max(0, extracted_count - quarantined_count)
+        parse_status = "parsed" if extracted_count else "partial"
+        if extracted_count and quarantined_count:
+            parse_status = "review_required"
+        yield_rate = None
+        if expected_row_count and expected_row_count > 0:
+            yield_rate = round(extracted_count / expected_row_count, 4)
+
         statement = Statement(
             user_id=user_id,
             pdf_id=pdf_id,
@@ -546,18 +671,37 @@ async def parse_statement(
             payments_received=extracted.payments_received,
             parser_used=extracted.parser_id,
             parse_status=parse_status,
+            expected_row_count=expected_row_count,
+            extracted_row_count=extracted_count,
+            promoted_row_count=promoted_target,
+            quarantined_row_count=quarantined_count,
+            yield_rate=yield_rate,
+            parse_errors=(
+                {
+                    "confidence_threshold": confidence_threshold,
+                    "expected_row_count": expected_row_count,
+                    "extracted_row_count": extracted_count,
+                    "quarantined_row_count": quarantined_count,
+                    "yield_rate": yield_rate,
+                }
+                if expected_row_count or quarantined_count
+                else None
+            ),
             statement_fingerprint=semantic_fingerprint,
             version_no=(superseded_statement.version_no + 1) if superseded_statement else 1,
             supersedes_statement_id=superseded_statement.id if superseded_statement else None,
             is_active=True,
             parsed_at=datetime.now(timezone.utc),
-            transaction_count=len(extracted.transactions),
+            transaction_count=extracted_count,
         )
         db.add(statement)
         await db.flush()
 
+        promoted_count = 0
         for txn in extracted.transactions:
-            extraction_method = "llm_fallback" if "+llm" in extracted.parser_id else "template"
+            extraction_method = "llm_fallback" if "llm" in extracted.parser_id.lower() else "template"
+            txn_confidence = max(0.0, min(1.0, float(txn.confidence or 0.0)))
+            is_quarantined = txn_confidence < confidence_threshold
             parsed = ParsedTransaction(
                 user_id=user_id,
                 source_type="statement",
@@ -572,7 +716,8 @@ async def parse_statement(
                 foreign_amount=txn.foreign_amount,
                 foreign_currency=txn.foreign_currency,
                 reference_number=txn.reference_number,
-                confidence=txn.confidence,
+                confidence=txn_confidence,
+                is_quarantined=is_quarantined,
                 extraction_method=extraction_method,
                 line_number=txn.line_number,
                 dedupe_fingerprint=build_transaction_dedupe_fingerprint(
@@ -586,13 +731,38 @@ async def parse_statement(
             db.add(parsed)
             await db.flush()
 
-            await promote_to_canonical(
-                db=db,
-                user_id=user_id,
-                parsed_txn=parsed,
-                bank_name=extracted.bank_name,
-                account_type=extracted.account_type,
-                account_masked=extracted.account_number_masked,
+            if not is_quarantined:
+                await promote_to_canonical(
+                    db=db,
+                    user_id=user_id,
+                    parsed_txn=parsed,
+                    bank_name=extracted.bank_name,
+                    account_type=extracted.account_type,
+                    account_masked=extracted.account_number_masked,
+                )
+                promoted_count += 1
+
+        statement.promoted_row_count = promoted_count
+        if extracted_count and quarantined_count:
+            db.add(
+                ReviewTask(
+                    user_id=user_id,
+                    statement_id=statement.id,
+                    task_type="statement_review",
+                    status="open",
+                    reason_code="low_confidence",
+                    title="Statement has low-confidence transactions",
+                    details=(
+                        f"{quarantined_count} transaction(s) were quarantined below confidence "
+                        f"threshold {confidence_threshold:.2f}."
+                    ),
+                    payload_json={
+                        "statement_id": str(statement.id),
+                        "quarantined_row_count": quarantined_count,
+                        "promoted_row_count": promoted_count,
+                        "confidence_threshold": confidence_threshold,
+                    },
+                )
             )
 
         await create_bill_from_statement(db, user_id, statement)

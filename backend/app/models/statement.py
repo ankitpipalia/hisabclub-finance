@@ -1,11 +1,43 @@
+import logging
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.models.base import Base, UUIDPrimaryKeyMixin
+
+logger = logging.getLogger(__name__)
+
+STATEMENT_PARSE_STATUS_ALLOWED = {
+    "uploaded",
+    "classifying",
+    "extracting",
+    "validating",
+    "review_required",
+    "parsed",
+    "partial",
+    "failed",
+}
+
+STATEMENT_PARSE_STATUS_LEGACY_MAP = {
+    "success": "parsed",
+    "no_transactions": "partial",
+    "pending": "uploaded",
+    "parsing": "extracting",
+}
+
+
+def normalize_statement_parse_status(value: str | None) -> str:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return "uploaded"
+    normalized = STATEMENT_PARSE_STATUS_LEGACY_MAP.get(normalized, normalized)
+    if normalized in STATEMENT_PARSE_STATUS_ALLOWED:
+        return normalized
+    logger.warning("Unknown statement parse_status '%s' normalized to 'failed'", value)
+    return "failed"
 
 
 class Statement(UUIDPrimaryKeyMixin, Base):
@@ -37,10 +69,16 @@ class Statement(UUIDPrimaryKeyMixin, Base):
     currency: Mapped[str] = mapped_column(String(3), default="INR", nullable=False)
 
     parser_used: Mapped[str] = mapped_column(String(100), nullable=False)
+    # uploaded | classifying | extracting | validating | review_required | parsed | partial | failed
     parse_status: Mapped[str] = mapped_column(
         String(20), default="uploaded", nullable=False
-    )  # uploaded | classifying | extracting | validating | review_required | parsed | partial | failed
+    )
     parse_errors: Mapped[dict | None] = mapped_column(JSONB)
+    expected_row_count: Mapped[int | None] = mapped_column()
+    extracted_row_count: Mapped[int | None] = mapped_column()
+    promoted_row_count: Mapped[int | None] = mapped_column()
+    quarantined_row_count: Mapped[int | None] = mapped_column()
+    yield_rate: Mapped[float | None] = mapped_column(Float)
     statement_fingerprint: Mapped[str | None] = mapped_column(String(64))
     version_no: Mapped[int] = mapped_column(default=1, nullable=False)
     supersedes_statement_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -57,3 +95,7 @@ class Statement(UUIDPrimaryKeyMixin, Base):
     user = relationship("User", back_populates="statements")
     pdf = relationship("RawPdf", back_populates="statement")
     parsed_transactions = relationship("ParsedTransaction", back_populates="statement")
+
+    @validates("parse_status")
+    def _validate_parse_status(self, _key: str, value: str | None) -> str:
+        return normalize_statement_parse_status(value)
