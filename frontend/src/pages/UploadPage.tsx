@@ -44,6 +44,7 @@ const DOCUMENT_TYPE_OPTIONS = [
 ] as const;
 
 type DocumentTypeHint = (typeof DOCUMENT_TYPE_OPTIONS)[number]['value'];
+const SUPPORTED_UPLOAD_EXTS = ['.pdf', '.xlsx', '.xls', '.csv'];
 
 type UploadItem = {
   id: string;
@@ -65,15 +66,30 @@ type UploadNotification = {
   canReprocess?: boolean;
 };
 
+type SelectionStats = {
+  picked: number;
+  acceptedSupported: number;
+  skippedUnsupported: number;
+};
+
 export default function UploadPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [notifications, setNotifications] = useState<UploadNotification[]>([]);
+  const [selectionStats, setSelectionStats] = useState<SelectionStats | null>(null);
 
   const queuedCount = useMemo(
     () => notifications.filter((item) => item.status === 'reviewing' || item.status === 'queued').length,
+    [notifications],
+  );
+  const successCount = useMemo(
+    () => notifications.filter((item) => item.status === 'success').length,
+    [notifications],
+  );
+  const errorCount = useMemo(
+    () => notifications.filter((item) => item.status === 'error').length,
     [notifications],
   );
 
@@ -81,7 +97,7 @@ export default function UploadPage() {
     let cancelled = false;
     const loadRecentUploads = async () => {
       try {
-        const recent = await api.getRecentUploads(12);
+        const recent = await api.getRecentUploads(100);
         if (cancelled) return;
         setNotifications((current) => {
           const liveIds = new Set(current.map((item) => item.id));
@@ -109,8 +125,9 @@ export default function UploadPage() {
 
   const addFiles = (fileList: FileList | null) => {
     if (!fileList) return;
-    const nextItems = Array.from(fileList)
-      .filter((file) => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+    const selected = Array.from(fileList);
+    const nextItems = selected
+      .filter((file) => isSupportedUploadFile(file))
       .map((file) => {
         const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
         return {
@@ -122,6 +139,11 @@ export default function UploadPage() {
           documentTypeHint: 'auto' as DocumentTypeHint,
         };
       });
+    setSelectionStats({
+      picked: selected.length,
+      acceptedSupported: nextItems.length,
+      skippedUnsupported: Math.max(0, selected.length - nextItems.length),
+    });
     if (nextItems.length === 0) return;
     setItems((current) => [...current, ...nextItems]);
   };
@@ -277,7 +299,7 @@ export default function UploadPage() {
           <p className="hc-kicker">Statement Intake</p>
           <h1 className="hc-page-title">Upload Documents</h1>
           <p className="hc-page-subtitle">
-            Queue one or more PDFs, choose bank or tax document type per file, and let the local
+            Queue one or more documents, choose bank or tax document type per file, and let the local
             LLM route each document.
           </p>
         </div>
@@ -298,6 +320,12 @@ export default function UploadPage() {
             <p className="hc-panel-sub" style={{ marginTop: '0.25rem' }}>
               Select a folder from your device. Browser picks files recursively (root to all nested subfolders).
             </p>
+            {selectionStats ? (
+              <p className="hc-panel-sub" style={{ marginTop: '0.4rem' }}>
+                Last selection: picked {selectionStats.picked} file(s), accepted {selectionStats.acceptedSupported} supported file(s),
+                skipped {selectionStats.skippedUnsupported} unsupported file(s).
+              </p>
+            ) : null}
 
             <div className="hc-inline-actions" style={{ marginTop: '0.75rem' }}>
               <button
@@ -313,6 +341,7 @@ export default function UploadPage() {
             <input
               ref={folderRef}
               type="file"
+              accept=".pdf,.xlsx,.xls,.csv"
               multiple
               className="hidden"
               onChange={(e) => addFiles(e.target.files)}
@@ -339,16 +368,16 @@ export default function UploadPage() {
             <input
               ref={fileRef}
               type="file"
-              accept=".pdf"
+              accept=".pdf,.xlsx,.xls,.csv"
               multiple
               className="hidden"
               onChange={(e) => addFiles(e.target.files)}
             />
 
             <Upload className="mx-auto" size={40} strokeWidth={1.5} color="var(--hc-muted-fg)" />
-            <p style={{ marginTop: '0.6rem', fontWeight: 600 }}>Drop one or more PDF statements here</p>
+            <p style={{ marginTop: '0.6rem', fontWeight: 600 }}>Drop one or more supported files here</p>
             <p className="hc-panel-sub" style={{ marginTop: '0.2rem' }}>
-              or click to browse local files
+              Supports PDF, XLSX, XLS, and CSV
             </p>
           </div>
 
@@ -423,7 +452,7 @@ export default function UploadPage() {
 
                     <div style={{ gridColumn: '1 / -1' }}>
                       <label htmlFor={`pdf-password-${item.id}`} className="hc-label">
-                        PDF Password
+                        PDF Password (PDF only)
                       </label>
                       <input
                         id={`pdf-password-${item.id}`}
@@ -479,7 +508,7 @@ export default function UploadPage() {
           ) : (
             <div className="hc-msg" style={{ marginTop: '1rem' }}>
               <Sparkles size={18} strokeWidth={1.5} />
-              <span>No upload queue yet. Add one or more PDFs to start local review.</span>
+              <span>No upload queue yet. Add supported files to start local review.</span>
             </div>
           )}
         </section>
@@ -505,6 +534,9 @@ export default function UploadPage() {
             </div>
           ) : (
             <div className="space-y-3" style={{ marginTop: '0.9rem' }}>
+              <p className="hc-panel-sub">
+                Total {notifications.length} · Reviewing {queuedCount} · Success {successCount} · Error {errorCount}
+              </p>
               {notifications.map((item) => (
                 <div
                   key={item.id}
@@ -554,6 +586,17 @@ function normalizeReviewStatus(status: string): UploadNotification['status'] {
     return 'success';
   }
   return 'error';
+}
+
+function isSupportedUploadFile(file: File): boolean {
+  const lowerName = file.name.toLowerCase();
+  if (SUPPORTED_UPLOAD_EXTS.some((ext) => lowerName.endsWith(ext))) return true;
+  const mime = (file.type || '').toLowerCase();
+  if (mime === 'application/pdf' || mime === 'text/csv') return true;
+  return (
+    mime === 'application/vnd.ms-excel' ||
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
 }
 
 function toAccountTypeHint(documentTypeHint: DocumentTypeHint): string | undefined {

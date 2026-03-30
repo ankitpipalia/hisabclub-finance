@@ -6,7 +6,7 @@
 **HisabClub: Privacy-First Indian Personal Finance Platform Architecture**
 
 ### 1.2 Executive Summary
-HisabClub is a personal finance platform for Indian users who manage multiple savings accounts, current accounts, and credit cards across multiple institutions. The core product promise is to ingest financial records from uploaded PDFs and Gmail attachments, extract transactions using a hybrid deterministic + LLM pipeline, reconcile and normalize those records into a trustworthy personal ledger, and surface spending, transfer, tax, and billing insights without leaking sensitive financial data to third-party AI providers.
+HisabClub is a personal finance platform for Indian users who manage multiple savings accounts, current accounts, and credit cards across multiple institutions. The core product promise is to ingest financial records from uploaded documents (PDF plus selected spreadsheet formats) and Gmail attachments, extract transactions using a hybrid deterministic + LLM pipeline, reconcile and normalize those records into a trustworthy personal ledger, and surface spending, transfer, tax, and billing insights without leaking sensitive financial data to third-party AI providers.
 
 This architecture is designed around five non-negotiable principles:
 
@@ -68,7 +68,7 @@ This yields high implementation speed for MVP while preserving clear service bou
   - current account statements in future
   - credit card statements
   - interest certificates
-  - P&L / tax-supporting PDFs in future phases
+  - tax/demat supporting documents in `pdf/xlsx/xls/csv`
 
 ### 2.2 Out of Scope for MVP
 
@@ -82,7 +82,8 @@ This yields high implementation speed for MVP while preserving clear service bou
 ### 2.3 Assumptions
 
 - Users will supply statement PDFs manually or via Gmail sync.
-- Many PDFs will be password protected.
+- Users may also upload tax/demat support documents as `xlsx/xls/csv`.
+- Many statement PDFs will be password protected.
 - Some PDFs will contain machine-readable text; others will be scanned images.
 - Statement formats will vary heavily by bank, product, and statement year.
 - Users care about privacy and will prefer local/self-hosted AI where possible.
@@ -98,19 +99,19 @@ This yields high implementation speed for MVP while preserving clear service bou
 - Register/login
 - Connect Gmail via OAuth
 - Configure sender allowlist and sync window
-- Upload one or more PDFs manually
+- Upload one or more supported files manually (`pdf/xlsx/xls/csv`)
 - Select statement type:
   - auto
   - bank account statement
   - credit card statement
-- Enter PDF password when required
+- Enter PDF password when required (PDF files only)
 - Track ingestion status:
   - uploaded
   - under review
   - parsed
   - review required
   - failed
-- View statement metadata and original PDF
+- View statement metadata and original source file
 - Review extracted transactions
 - Approve or edit incorrect rows
 - Delete statement and all associated extraction memory
@@ -408,11 +409,12 @@ Each module exposes:
 
 ### 8.2 Upload Pipeline
 
-1. Client uploads PDF with metadata:
+1. Client uploads supported file with metadata:
    - source = manual
    - bank hint optional
    - account type hint optional
-   - password optional
+   - document type hint (`auto` or explicit)
+   - password optional (PDF only)
 2. API stores file to object storage or encrypted file system.
 3. API computes:
    - SHA-256 hash
@@ -426,11 +428,11 @@ Each module exposes:
 
 ### 8.3 Input Controls
 
-- Accept only `application/pdf`
+- Accept `application/pdf`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `application/vnd.ms-excel`, `text/csv`
 - max upload size configurable
-- password field optional
+- password field optional (PDF)
 - malware scanning before queue
-- PDF parser sandboxing
+- PDF parser sandboxing for PDF statement path
 - file hash computed on stream
 
 ### 8.4 Statement Type Selection Strategy
@@ -977,6 +979,8 @@ For each statement create a `reconciliation_result`:
 ### 13.4 Deduplication Rules
 
 - Duplicate files should not produce new canonical transactions.
+- File dedup is SHA-256 content-hash based per user, independent of filename.
+- Same-content files with different names are intentionally treated as duplicates.
 - Reprocessed statements create new extraction attempts but reuse the same statement lineage.
 - If a Gmail attachment and manual upload are identical, store both source events but map to one statement lineage.
 
@@ -1477,20 +1481,28 @@ Form fields:
 - `file`
 - `bank_hint` optional
 - `account_type_hint` optional: `auto|bank_account|credit_card`
-- `pdf_password` optional
-- `idempotency_key`
+- `document_type_hint` optional: `auto|bank_statement|credit_card_statement|interest_certificate|fd_report|tax_challan|ppf_statement|tax_form|dividend_report|demat_tax_report|demat_trade_report|demat_holdings`
+- `password` optional (PDF only)
+- `force_reprocess` optional boolean
 
 Response:
 
 ```json
 {
+  "pdf_id": "rawpdf_123",
   "document_id": "rawpdf_123",
-  "statement_id": "stmt_456",
-  "status": "uploaded",
+  "status": "reviewing",
   "message": "Document is under review by the local LLM. Please wait.",
-  "dedupe_status": "new"
+  "bank_name": "HDFC",
+  "account_type": "credit_card"
 }
 ```
+
+Notes:
+- For spreadsheet/CSV files, the endpoint returns either:
+  - `success` (registered as tax/demat artifact), or
+  - `review_required` (auto-detect uncertain; user must select explicit document type)
+- Statement parsing remains PDF-first.
 
 #### List Statements
 
@@ -1676,6 +1688,7 @@ Response:
 ### 16.3 Mobile Client Responsibilities
 
 - direct upload with progress
+- support manual intake for `pdf/xlsx/xls/csv`
 - show review notification feed
 - allow document type selection per file
 - open PDF in embedded or external viewer
@@ -1701,11 +1714,12 @@ The web app is the power-user and operations-first surface.
 
 ### 17.2 Web Capabilities
 
-- bulk upload queue
+- bulk upload queue (`pdf/xlsx/xls/csv`)
 - Gmail account management
 - review queue resolution
 - parser support gap dashboard
 - detailed statement integrity view
+- Tax & Audit FY selector (running FY + previous FY windows)
 - export flows
 - admin model benchmark pages later
 
@@ -2039,35 +2053,40 @@ Likely first split:
 
 ## 22. End-to-End Sequence Flows
 
-### 22.1 Flow A: Manual PDF Upload
+### 22.1 Flow A: Manual Document Upload
 
-1. User selects PDF(s) in mobile/web.
+1. User selects supported file(s) in mobile/web (`pdf/xlsx/xls/csv`).
 2. User optionally selects:
    - bank hint
-   - `auto` or `bank_account` or `credit_card`
-   - password
+   - document type (`auto` or explicit)
+   - password (PDF only)
 3. API validates MIME and size.
 4. File is malware-scanned.
 5. File hash is computed.
-6. `raw_pdfs` row is created.
-7. Object is stored.
-8. `document.process` event is enqueued.
-9. Client gets immediate `uploaded` response and notification feed entry.
-10. Worker extracts machine text.
-11. If machine text poor, OCR runs.
-12. Known parser is attempted if hint/classifier supports it.
-13. If parser insufficient, LLM metadata + transaction extraction runs.
-14. Raw rows are stored.
-15. Validation/reconciliation runs.
-16. If high confidence:
+6. If non-PDF tax/demat artifact:
+   - register as `document_artifact`
+   - classify (`success` or `review_required`)
+   - finish without statement parser
+7. If statement PDF:
+   - `raw_pdfs` row is created.
+   - object is stored.
+   - `document.process` event is enqueued.
+8. Client gets immediate status response and notification feed entry.
+9. Worker extracts machine text (PDF statement path).
+10. If machine text poor, OCR runs.
+11. Known parser is attempted if hint/classifier supports it.
+12. If parser insufficient, LLM metadata + transaction extraction runs.
+13. Raw rows are stored.
+14. Validation/reconciliation runs.
+15. If high confidence:
    - normalize
    - dedupe
    - categorize
    - promote canonical transactions
-17. If low confidence:
+16. If low confidence:
    - create review task
    - mark document `review_required`
-18. User receives completion notification.
+17. User receives completion notification.
 
 ### 22.2 Flow B: Gmail-Based Import
 

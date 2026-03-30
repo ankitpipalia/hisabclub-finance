@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 STATEMENT_CLASSIFICATION_PROMPT_VERSION = "statement_classification_v2"
 STATEMENT_EXTRACTION_PROMPT_VERSION = "statement_extraction_v2"
+DOCUMENT_CLASSIFICATION_PROMPT_VERSION = "document_classification_v1"
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,23 @@ def build_statement_extraction_system_prompt() -> str:
     )
 
 
+def build_document_classification_system_prompt() -> str:
+    return (
+        "You classify Indian personal-finance uploaded PDF documents.\n"
+        "Return strict JSON only with schema:\n"
+        '{"doc_type":"auto|bank_statement|credit_card_statement|demat_holdings|demat_trade_report|'
+        'demat_tax_report|dividend_report|interest_certificate|fd_report|tax_challan|'
+        'ppf_statement|tax_form|unknown_pdf",'
+        '"bank_hint":"SBI|HDFC|ICICI|AXIS|KOTAK|PNB|BOB|CANARA|UNION|INDIAN|BOI|IDBI|INDUSIND|YES|FEDERAL|null",'
+        '"account_type_hint":"credit_card|bank_account|null","confidence":0..1,"reason":"<=28 words"}\n'
+        "Rules:\n"
+        "- Prefer unknown_pdf over guessing.\n"
+        "- Use bank_hint only if explicitly visible in current document text.\n"
+        "- Do not force bank_statement/credit_card_statement unless evidence is clear.\n"
+        "- If evidence is mixed/ambiguous, return unknown_pdf with low confidence."
+    )
+
+
 def few_shot_messages(
     *,
     bank_hint: str | None,
@@ -147,4 +165,3 @@ def few_shot_messages(
         messages.append({"role": "user", "content": example.user})
         messages.append({"role": "assistant", "content": example.assistant})
     return messages
-

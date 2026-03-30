@@ -67,15 +67,24 @@ class ApiClient {
       let detail = 'Request failed';
       const raw = await response.text().catch(() => '');
       if (raw && raw.trim()) {
+        const normalized = raw.trim();
+        const isHtml =
+          normalized.startsWith('<!DOCTYPE html') ||
+          normalized.startsWith('<html') ||
+          normalized.includes('<html');
+        if (isHtml) {
+          detail = `Upstream gateway returned HTML error page (HTTP ${response.status}). Please retry.`;
+          throw new ApiError(response.status, detail);
+        }
         try {
-          const parsed = JSON.parse(raw);
+          const parsed = JSON.parse(normalized);
           if (parsed && typeof parsed.detail === 'string') {
             detail = parsed.detail;
           } else {
-            detail = raw.trim().slice(0, 300);
+            detail = normalized.slice(0, 300);
           }
         } catch {
-          detail = raw.trim().slice(0, 300);
+          detail = normalized.slice(0, 300);
         }
       } else if (response.status >= 500) {
         detail = 'Backend server is temporarily unavailable. Please try again.';

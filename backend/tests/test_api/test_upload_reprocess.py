@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from starlette.datastructures import UploadFile
 
 from app.api.v1 import upload as upload_api
+from app.engines.intake.doc_classifier import ClassifiedDocument
 from app.engines.parser.base import StatementDuplicateError
 from app.engines.parser.password_patterns import PdfPasswordResolution
 from app.schemas.upload import UploadResponse
@@ -41,6 +42,11 @@ class _DummyDb:
 
 def _make_pdf_upload(filename: str = "statement.pdf") -> UploadFile:
     return UploadFile(filename=filename, file=io.BytesIO(b"%PDF-1.4\nmock\n%%EOF"))
+
+
+def _make_non_pdf_upload(filename: str = "statement.xlsx", data: bytes | None = None) -> UploadFile:
+    payload = data if data is not None else b"col1,col2\n1,2\n"
+    return UploadFile(filename=filename, file=io.BytesIO(payload))
 
 
 @pytest.mark.asyncio
@@ -242,3 +248,128 @@ async def test_bulk_upload_endpoint_returns_per_file_results(monkeypatch):
     assert results.success_count == 1
     assert results.failed_count == 0
     assert results.items[1].account_type == "tax_challan"
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_unknown_pdf_returns_review_required(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload_api.settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(upload_api.settings, "llm_enabled", False)
+
+    async def _fake_resolve_password(**_kwargs):
+        return PdfPasswordResolution(
+            password=None,
+            encrypted=False,
+            source="not_encrypted",
+            attempted=0,
+        )
+
+    monkeypatch.setattr(upload_api, "resolve_pdf_password", _fake_resolve_password)
+    monkeypatch.setattr(
+        upload_api,
+        "classify_uploaded_pdf",
+        lambda **_kwargs: ClassifiedDocument(doc_type="unknown_pdf"),
+    )
+
+    db = _DummyDb(existing_pdf=None)
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    response = await upload_api.upload_pdf(
+        user=user,
+        db=db,
+        file=_make_pdf_upload("ambiguous.pdf"),
+        document_type_hint="auto",
+    )
+
+    assert response.status == "review_required"
+    assert "Auto-detect is uncertain" in response.message
+    assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_non_pdf_upload_registers_artifact_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload_api.settings, "upload_dir", str(tmp_path))
+
+    db = _DummyDb(existing_pdf=None)
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    response = await upload_api.upload_pdf(
+        user=user,
+        db=db,
+        file=_make_non_pdf_upload("Stocks-Capital-Gains-Report.xlsx"),
+        document_type_hint="auto",
+    )
+
+    artifact = next(obj for obj in db.added if obj.__class__.__name__ == "DocumentArtifact")
+    assert response.status == "success"
+    assert response.account_type == "demat_tax_report"
+    assert artifact.file_ext == "xlsx"
+    assert artifact.doc_type == "demat_tax_report"
+    assert Path(artifact.file_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_non_pdf_upload_auto_uncertain_returns_review_required(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload_api.settings, "upload_dir", str(tmp_path))
+
+    db = _DummyDb(existing_pdf=None)
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    response = await upload_api.upload_pdf(
+        user=user,
+        db=db,
+        file=_make_non_pdf_upload("unknown-sheet.xlsx"),
+        document_type_hint="auto",
+    )
+
+    assert response.status == "review_required"
+    assert "spreadsheet" in response.message.lower()
+    assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_bulk_upload_accepts_pdf_and_spreadsheet(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload_api.settings, "upload_dir", str(tmp_path))
+    seen: dict = {}
+
+    async def _fake_enqueue_parse_job(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def _fake_ingest_pdf_knowledge(**_kwargs):
+        return 1
+
+    async def _fake_resolve_password(**_kwargs):
+        return PdfPasswordResolution(
+            password=None,
+            encrypted=False,
+            source="not_encrypted",
+            attempted=0,
+        )
+
+    monkeypatch.setattr(upload_api, "enqueue_parse_job", _fake_enqueue_parse_job)
+    monkeypatch.setattr(upload_api, "ingest_pdf_knowledge", _fake_ingest_pdf_knowledge)
+    monkeypatch.setattr(upload_api, "resolve_pdf_password", _fake_resolve_password)
+
+    db = _DummyDb(existing_pdf=None)
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    results = await upload_api.upload_pdfs(
+        user=user,
+        db=db,
+        files=[
+            _make_pdf_upload("stmt-1.pdf"),
+            _make_non_pdf_upload("stocks-holdings.xlsx"),
+        ],
+        items_json=json.dumps(
+            [
+                {"document_type_hint": "bank_statement"},
+                {"document_type_hint": "demat_holdings"},
+            ]
+        ),
+    )
+
+    assert results.total == 2
+    assert results.reviewing_count == 1
+    assert results.success_count == 1
+    assert results.failed_count == 0
+    assert results.items[1].account_type == "demat_holdings"

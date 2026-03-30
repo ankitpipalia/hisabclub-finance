@@ -2,11 +2,12 @@
 
 ## What is HisabClub?
 
-A **privacy-first, self-hosted Indian personal finance ledger**. Users upload credit card and bank statement PDFs (password-protected), optionally sync Android SMS transaction alerts, and the app merges all sources into a unified ledger with automatic categorization, spending insights, bill tracking, and budget management.
+A **privacy-first, self-hosted Indian personal finance ledger**. Users upload bank/credit-card statements and tax-supporting documents (`.pdf`, `.xlsx`, `.xls`, `.csv`), optionally sync Android SMS transaction alerts, and the app merges all sources into a unified ledger with automatic categorization, spending insights, bill tracking, and tax/audit assessment.
 
 **Core differentiators:**
 - Indian bank statement expertise (HDFC, Axis, SBI parsers)
 - Password-protected PDF handling (pikepdf decryption)
+- Mixed-format local document intake for tax/demat artifacts (`pdf/xlsx/xls/csv`)
 - Cross-source reconciliation (statement + SMS dedup)
 - Self-hosted (all data stays on your server)
 - Deterministic core logic, LLM only as feature-flagged fallback
@@ -85,18 +86,30 @@ The Docker `api` service is not the primary supported path right now. The suppor
 
 ## Recent Parsing / Retrieval Changes
 
+- Upload API now accepts `pdf/xlsx/xls/csv`:
+  - statement parsing remains PDF-first
+  - spreadsheet/CSV uploads are stored as `document_artifacts` and routed through tax/demat classification
 - Upload and folder-import flows now ingest decrypted PDF text into `document_knowledge_chunks`.
 - Statement parsing builds same-user context from prior chunks and prior parsed statements before LLM classification or fallback extraction.
 - Bank inference now prefers statement-header matches over incidental bank names inside transaction descriptions.
+- Classifier false positives were reduced:
+  - short tokens like `cas` are word-boundary matched (so `cash` no longer triggers demat by mistake)
+  - generic `interest` no longer auto-forces `interest_certificate` without certificate cues
 - Upload review notifications now have a persistent backend feed at `GET /api/v1/upload/recent`.
 - Statements can now be deleted with full local cleanup, including `raw_pdfs`, stored PDF files, and `document_knowledge_chunks`.
 - Statements can now be re-reviewed through the local LLM using the stored PDF as the source of truth.
 - Existing PDFs can be reindexed into the local knowledge store with `make backfill-knowledge`.
 - Canonical promotion now runs atomically inside a DB savepoint so partial failures cannot leave orphaned ledger rows.
 - Statement ingestion now computes semantic statement fingerprints and blocks accidental duplicate statement insertion unless reprocess is explicitly allowed.
+- File dedup is content-hash based (`SHA-256`) per user:
+  - same-content files with different names are treated as duplicates
+  - duplicate response now includes the matched prior file name
 - Transaction dedup now has a deterministic fingerprint path (`user + account + date + abs(amount) + normalized description prefix`) in addition to fuzzy matching.
 - Transfer/card-payment pairing now persists auditable matches in `transfer_matches`.
 - Gmail OAuth credentials are now encrypted at rest and remain backward-compatible with previously stored plaintext rows.
+- Tax & Audit web page now uses Financial Year selection:
+  - Running FY + previous 5 FYs
+  - auto-refresh on FY change with optional manual refresh buttons
 
 ## 2026-03-30 Architecture-Update Implementation
 

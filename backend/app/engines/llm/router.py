@@ -47,7 +47,11 @@ def route_model_for_task(
     small = settings.llm_small_model or base
     large = settings.llm_large_model or base
 
-    if task in {"statement_classification", "transfer_classification"}:
+    if task in {
+        "statement_classification",
+        "transfer_classification",
+        "document_classification",
+    }:
         return small
 
     if difficulty is None:
@@ -57,4 +61,3 @@ def route_model_for_task(
     if difficulty.level == "low":
         return small
     return base
-

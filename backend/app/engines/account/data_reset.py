@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -149,15 +149,23 @@ async def _delete_user_rows(db: AsyncSession, *, user_id: uuid.UUID) -> _ResetPl
     await run_delete("monthly_summaries", delete(MonthlySummary).where(MonthlySummary.user_id == user_id))
     await run_delete("recurring_patterns", delete(RecurringPattern).where(RecurringPattern.user_id == user_id))
     await run_delete("raw_sms", delete(RawSms).where(RawSms.user_id == user_id))
-    await run_delete("parsed_transactions", delete(ParsedTransaction).where(ParsedTransaction.user_id == user_id))
 
     canonical_ids_subquery = select(CanonicalTransaction.id).where(
         CanonicalTransaction.user_id == user_id
     )
+    parsed_ids_subquery = select(ParsedTransaction.id).where(
+        ParsedTransaction.user_id == user_id
+    )
     await run_delete(
         "transaction_sources",
-        delete(TransactionSource).where(TransactionSource.canonical_txn_id.in_(canonical_ids_subquery)),
+        delete(TransactionSource).where(
+            or_(
+                TransactionSource.canonical_txn_id.in_(canonical_ids_subquery),
+                TransactionSource.parsed_txn_id.in_(parsed_ids_subquery),
+            )
+        ),
     )
+    await run_delete("parsed_transactions", delete(ParsedTransaction).where(ParsedTransaction.user_id == user_id))
 
     await run_delete(
         "canonical_transactions",

@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, status
 from jose import jwt
 from passlib.hash import argon2
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
@@ -179,8 +180,16 @@ async def clear_my_data(request: ClearUserDataRequest, user: CurrentUser, db: Db
             detail="Current password is incorrect.",
         )
 
-    result = await clear_user_data_everywhere(db, user_id=user.id)
-    await db.commit()
+    try:
+        result = await clear_user_data_everywhere(db, user_id=user.id)
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to clear user data due to a database error. Please try again.",
+        ) from exc
+
     return ClearUserDataResponse(
         message="All user-scoped data, files, and local LLM context have been cleared.",
         deleted_rows=result.deleted_rows,

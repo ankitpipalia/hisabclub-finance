@@ -9,7 +9,11 @@ from sqlalchemy import delete, desc, select
 
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
-from app.engines.intake.doc_classifier import classify_uploaded_pdf
+from app.engines.intake.doc_classifier import (
+    classify_document,
+    classify_uploaded_pdf,
+    normalize_doc_type_hint,
+)
 from app.engines.intake.tax_document_parser import extract_tax_document_metadata
 from app.engines.jobs.service import enqueue_parse_job, list_dlq_jobs, requeue_dlq_job
 from app.engines.llm.knowledge import ingest_pdf_knowledge
@@ -38,6 +42,8 @@ from app.security.crypto import encrypt_text
 router = APIRouter()
 
 _STATEMENT_DOC_TYPES = {"bank_statement", "credit_card_statement"}
+_SUPPORTED_NON_PDF_UPLOAD_EXTS = {".xlsx", ".xls", ".csv"}
+_SUPPORTED_UPLOAD_EXTS = {".pdf", *_SUPPORTED_NON_PDF_UPLOAD_EXTS}
 
 
 def _map_statement_parse_status_to_review_status(parse_status: str | None) -> str:
@@ -133,12 +139,14 @@ async def _register_non_statement_pdf(
         )
     ).scalar_one_or_none()
     if existing is not None and not force_reprocess:
+        existing_name = (existing.file_name or "").strip()
+        duplicate_ref = f" ({existing_name})" if existing_name else ""
         return UploadResponse(
             pdf_id=str(existing.id),
             document_id=str(existing.id),
             status="duplicate",
             message=(
-                "This document has already been uploaded. "
+                f"This document matches a previously uploaded file{duplicate_ref}. "
                 "Enable reprocess to register it again."
             ),
             bank_name=bank_hint,
@@ -208,6 +216,111 @@ async def _register_non_statement_pdf(
         )
     except Exception:
         pass
+
+    return UploadResponse(
+        pdf_id=str(artifact.id),
+        document_id=str(artifact.id),
+        status="success",
+        message=(
+            "Document registered for tax assessment. "
+            "It will be linked in your new-regime tax view."
+        ),
+        bank_name=bank_hint,
+        account_type=doc_type,
+    )
+
+
+async def _register_non_pdf_artifact(
+    *,
+    db: DbSession,
+    user_id: uuid.UUID,
+    content: bytes,
+    file_name: str,
+    file_ext: str,
+    file_size: int,
+    file_hash: str,
+    bank_hint: str | None,
+    account_type_hint: str | None,
+    doc_type: str,
+    force_reprocess: bool,
+) -> UploadResponse:
+    existing = (
+        await db.execute(
+            select(DocumentArtifact)
+            .where(
+                DocumentArtifact.user_id == user_id,
+                DocumentArtifact.file_hash_sha256 == file_hash,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None and not force_reprocess:
+        existing_name = (existing.file_name or "").strip()
+        duplicate_ref = f" ({existing_name})" if existing_name else ""
+        return UploadResponse(
+            pdf_id=str(existing.id),
+            document_id=str(existing.id),
+            status="duplicate",
+            message=(
+                f"This document matches a previously uploaded file{duplicate_ref}. "
+                "Enable reprocess to register it again."
+            ),
+            bank_name=bank_hint,
+            account_type=doc_type,
+        )
+
+    storage_dir = os.path.join(settings.upload_dir, str(user_id), "artifacts")
+    os.makedirs(storage_dir, exist_ok=True)
+    artifact_id = existing.id if existing is not None else uuid.uuid4()
+    ext = (file_ext or "").lower().lstrip(".") or "bin"
+    storage_path = os.path.join(storage_dir, f"{artifact_id}.{ext}")
+    with open(storage_path, "wb") as out:
+        out.write(content)
+
+    extracted_text = ""
+    if ext == "csv":
+        extracted_text = content.decode("utf-8", errors="ignore")[:30000]
+
+    metadata = extract_tax_document_metadata(
+        doc_type=doc_type,
+        text=extracted_text,
+        source_filename=file_name,
+    )
+    if bank_hint:
+        metadata["bank_hint"] = bank_hint
+    if account_type_hint:
+        metadata["account_type_hint"] = account_type_hint
+
+    if existing is None:
+        artifact = DocumentArtifact(
+            id=artifact_id,
+            user_id=user_id,
+            file_path=storage_path,
+            file_name=file_name,
+            file_ext=ext,
+            file_hash_sha256=file_hash,
+            file_size_bytes=file_size,
+            doc_type=doc_type,
+            bank_hint=bank_hint,
+            status="parsed",
+            parse_message=f"Registered {doc_type} document for tax assessment.",
+            metadata_json=metadata,
+            processed_at=datetime.now(timezone.utc),
+        )
+        db.add(artifact)
+    else:
+        artifact = existing
+        artifact.file_path = storage_path
+        artifact.file_name = file_name
+        artifact.file_ext = ext
+        artifact.file_size_bytes = file_size
+        artifact.doc_type = doc_type
+        artifact.bank_hint = bank_hint
+        artifact.status = "parsed"
+        artifact.parse_message = f"Registered {doc_type} document for tax assessment."
+        artifact.metadata_json = metadata
+        artifact.processed_at = datetime.now(timezone.utc)
+    await db.flush()
 
     return UploadResponse(
         pdf_id=str(artifact.id),
@@ -387,7 +500,7 @@ async def upload_pdf(
     document_type_hint: str | None = Form(None),
     force_reprocess: bool = Form(False),
 ):
-    """Upload a PDF document (statement or tax-supporting doc)."""
+    """Upload a supported document (PDF/XLSX/XLS/CSV)."""
     if not isinstance(password, str):
         password = None
     if not isinstance(bank_hint, str):
@@ -399,10 +512,12 @@ async def upload_pdf(
     if not isinstance(force_reprocess, bool):
         force_reprocess = False
 
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
+    file_name = (file.filename or "").strip()
+    file_ext = os.path.splitext(file_name)[1].lower()
+    if not file_name or file_ext not in _SUPPORTED_UPLOAD_EXTS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are accepted",
+            detail="Unsupported file type. Allowed: .pdf, .xlsx, .xls, .csv",
         )
 
     content = await file.read()
@@ -416,6 +531,63 @@ async def upload_pdf(
         )
 
     hints = normalize_parser_hints(bank_hint=bank_hint, account_type_hint=account_type_hint)
+    normalized_doc_type_hint = normalize_doc_type_hint(document_type_hint)
+    auto_mode = normalized_doc_type_hint in {None, "auto"}
+
+    if file_ext in _SUPPORTED_NON_PDF_UPLOAD_EXTS:
+        resolved_bank_hint = hints.bank_hint
+        resolved_account_type_hint = hints.account_type_hint
+        if auto_mode:
+            classified = classify_document(file_name)
+            doc_type = classified.doc_type
+            resolved_bank_hint = resolved_bank_hint or classified.bank_hint
+            resolved_account_type_hint = (
+                resolved_account_type_hint or classified.account_type_hint
+            )
+        else:
+            doc_type = normalized_doc_type_hint or "unknown_pdf"
+
+        if doc_type in {"spreadsheet", "unknown_pdf", "unsupported"}:
+            return UploadResponse(
+                pdf_id=str(uuid.uuid4()),
+                document_id=None,
+                status="review_required",
+                message=(
+                    "Auto-detect is uncertain for this spreadsheet. "
+                    "Please choose the document type manually and re-upload."
+                ),
+                bank_name=resolved_bank_hint,
+                account_type=resolved_account_type_hint,
+            )
+
+        if doc_type in _STATEMENT_DOC_TYPES:
+            return UploadResponse(
+                pdf_id=str(uuid.uuid4()),
+                document_id=None,
+                status="review_required",
+                message=(
+                    "Spreadsheet bank/card statement parsing is not supported yet. "
+                    "Upload statement PDFs or choose the correct non-statement type."
+                ),
+                bank_name=resolved_bank_hint,
+                account_type=resolved_account_type_hint,
+            )
+
+        file_hash = hashlib.sha256(content).hexdigest()
+        return await _register_non_pdf_artifact(
+            db=db,
+            user_id=user.id,
+            content=content,
+            file_name=file_name,
+            file_ext=file_ext,
+            file_size=file_size,
+            file_hash=file_hash,
+            bank_hint=resolved_bank_hint,
+            account_type_hint=resolved_account_type_hint,
+            doc_type=doc_type,
+            force_reprocess=force_reprocess,
+        )
+
     try:
         password_resolution = await resolve_pdf_password(
             db=db,
@@ -423,7 +595,7 @@ async def upload_pdf(
             pdf_content=content,
             bank_hint=hints.bank_hint,
             account_type_hint=hints.account_type_hint,
-            source_filename=file.filename,
+            source_filename=file_name,
             manual_password=password,
         )
     except Exception as exc:
@@ -467,8 +639,9 @@ async def upload_pdf(
             else "bank_statement"
         )
     else:
+        auto_mode = (document_type_hint or "").strip().lower() in {"", "auto"}
         classified = classify_uploaded_pdf(
-            filename=file.filename,
+            filename=file_name,
             extracted_text=extracted_text,
             bank_hint=hints.bank_hint,
             account_type_hint=hints.account_type_hint,
@@ -476,11 +649,62 @@ async def upload_pdf(
         )
         doc_type = classified.doc_type
         resolved_bank_hint = resolved_bank_hint or classified.bank_hint
-        if resolved_account_type_hint is None:
-            if doc_type == "credit_card_statement":
-                resolved_account_type_hint = "credit_card"
-            elif doc_type == "bank_statement":
-                resolved_account_type_hint = "bank_account"
+        resolved_account_type_hint = (
+            resolved_account_type_hint or classified.account_type_hint
+        )
+        if settings.llm_enabled and auto_mode and (
+            doc_type == "unknown_pdf" or classified.confidence < 0.72
+        ):
+            try:
+                from app.engines.llm.client import LLMClient
+                from app.engines.llm.document_classifier import (
+                    llm_classify_uploaded_document,
+                )
+                from app.engines.llm.router import route_model_for_task
+
+                llm_client = LLMClient(
+                    base_url=settings.llm_base_url,
+                    api_key=settings.llm_api_key,
+                    model=settings.llm_model,
+                )
+                llm_model = route_model_for_task(task="document_classification")
+                llm_classified = await llm_classify_uploaded_document(
+                    llm_client,
+                    filename=file_name,
+                    extracted_text=extracted_text,
+                    deterministic=classified,
+                    model=llm_model,
+                )
+                if (
+                    llm_classified is not None
+                    and llm_classified.confidence >= 0.62
+                    and llm_classified.doc_type != "unknown_pdf"
+                ):
+                    doc_type = llm_classified.doc_type
+                    resolved_bank_hint = llm_classified.bank_hint or resolved_bank_hint
+                    resolved_account_type_hint = (
+                        llm_classified.account_type_hint or resolved_account_type_hint
+                    )
+            except Exception:
+                pass
+
+        if auto_mode and doc_type == "unknown_pdf":
+            return UploadResponse(
+                pdf_id=str(uuid.uuid4()),
+                document_id=None,
+                status="review_required",
+                message=(
+                    "Auto-detect is uncertain for this PDF. "
+                    "Please choose the document type manually and re-upload."
+                ),
+                bank_name=resolved_bank_hint,
+                account_type=resolved_account_type_hint,
+            )
+
+        if resolved_account_type_hint is None and doc_type == "credit_card_statement":
+            resolved_account_type_hint = "credit_card"
+        elif resolved_account_type_hint is None and doc_type == "bank_statement":
+            resolved_account_type_hint = "bank_account"
 
     # Hash for dedup
     file_hash = hashlib.sha256(content).hexdigest()
@@ -490,7 +714,7 @@ async def upload_pdf(
             db=db,
             user_id=user.id,
             content=content,
-            file_name=file.filename,
+            file_name=file_name,
             file_size=file_size,
             file_hash=file_hash,
             encrypted=password_resolution.encrypted,
@@ -512,9 +736,23 @@ async def upload_pdf(
     existing_pdf_id = result.scalar_one_or_none()
     is_reprocess = existing_pdf_id is not None and force_reprocess
     if existing_pdf_id is not None and not force_reprocess:
+        existing_pdf_name = (
+            (
+                await db.execute(
+                    select(RawPdf.original_filename)
+                    .where(RawPdf.user_id == user.id, RawPdf.id == existing_pdf_id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            or ""
+        )
+        duplicate_ref = f" ({existing_pdf_name})" if existing_pdf_name else ""
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This PDF has already been uploaded. Enable reprocess to parse it again.",
+            detail=(
+                "This PDF matches a previously uploaded statement"
+                f"{duplicate_ref}. Enable reprocess to parse it again."
+            ),
         )
 
     # Save file to disk
@@ -531,7 +769,7 @@ async def upload_pdf(
         id=pdf_id,
         user_id=user.id,
         source_type="manual_reprocess" if is_reprocess else "manual_upload",
-        original_filename=file.filename,
+        original_filename=file_name,
         file_hash_sha256=file_hash,
         storage_path=storage_path,
         file_size_bytes=file_size,
@@ -557,7 +795,7 @@ async def upload_pdf(
             user_id=user.id,
             pdf_content=content,
             password=resolved_password,
-            source_filename=file.filename,
+            source_filename=file_name,
             source_kind="raw_pdf",
             raw_pdf_id=pdf_id,
             bank_hint=resolved_bank_hint,
@@ -646,7 +884,7 @@ async def upload_pdfs(
     if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one PDF file is required.",
+            detail="At least one file is required.",
         )
 
     per_file_items: list[dict] = []
@@ -675,7 +913,7 @@ async def upload_pdfs(
 
     for idx, uploaded_file in enumerate(files):
         item = per_file_items[idx] if idx < len(per_file_items) else {}
-        file_name = uploaded_file.filename or f"file-{idx + 1}.pdf"
+        file_name = uploaded_file.filename or f"file-{idx + 1}"
         try:
             response = await upload_pdf(
                 user=user,

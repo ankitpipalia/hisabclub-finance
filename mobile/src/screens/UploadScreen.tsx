@@ -132,7 +132,12 @@ export default function UploadScreen() {
   const handlePickFile = async () => {
     try {
       const pickResult = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf',
+        type: [
+          'application/pdf',
+          'text/csv',
+          'application/vnd.ms-excel',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ],
         copyToCacheDirectory: true,
         multiple: true,
       });
@@ -166,7 +171,7 @@ export default function UploadScreen() {
 
   const handleUpload = async () => {
     if (selectedFiles.length === 0) {
-      Alert.alert('Error', 'Please select at least one PDF file first');
+      Alert.alert('Error', 'Please select at least one supported file first');
       return;
     }
 
@@ -261,7 +266,7 @@ export default function UploadScreen() {
           <Text style={styles.kicker}>Statement Intake</Text>
           <Text style={styles.title}>Upload Documents</Text>
           <Text style={styles.subtitle}>
-            Queue multiple PDFs, mark each as auto, bank account, or credit card, and let the local LLM review them.
+            Queue multiple files, mark each as auto, bank account, or credit card, and let the local LLM review them.
           </Text>
         </View>
       </FadeInView>
@@ -288,14 +293,14 @@ export default function UploadScreen() {
             <Button
               mode="outlined"
               onPress={handlePickFile}
-              icon="file-pdf-box"
+              icon="file-document-multiple-outline"
               style={styles.pickButton}
               textColor={colors.primary}
             >
-              {selectedFiles.length > 0 ? 'Add More PDFs' : 'Pick PDF Files'}
+              {selectedFiles.length > 0 ? 'Add More Files' : 'Pick Files'}
             </Button>
             <Text style={styles.passwordHint}>
-              Pick all PDFs from your folder in the native file picker. Files are uploaded from your device (client side).
+              Pick PDF/XLSX/XLS/CSV from your folder in the native picker. Files are uploaded from your device (client side).
             </Text>
           </View>
 
@@ -357,7 +362,7 @@ export default function UploadScreen() {
                     </View>
 
                     <TextInput
-                      label="PDF Password (if encrypted)"
+                      label="PDF Password (PDF only)"
                       value={file.password}
                       onChangeText={(value) => updateFile(file.id, { password: value })}
                       mode="outlined"

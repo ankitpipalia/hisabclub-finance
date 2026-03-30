@@ -73,15 +73,24 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     let detail = 'Request failed';
     const raw = await response.text().catch(() => '');
     if (raw && raw.trim()) {
+      const normalized = raw.trim();
+      const isHtml =
+        normalized.startsWith('<!DOCTYPE html') ||
+        normalized.startsWith('<html') ||
+        normalized.includes('<html');
+      if (isHtml) {
+        detail = `Upstream gateway returned HTML error page (HTTP ${response.status}). Please retry.`;
+        throw new ApiError(response.status, detail);
+      }
       try {
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(normalized);
         if (parsed && typeof parsed.detail === 'string') {
           detail = parsed.detail;
         } else {
-          detail = raw.trim().slice(0, 300);
+          detail = normalized.slice(0, 300);
         }
       } catch {
-        detail = raw.trim().slice(0, 300);
+        detail = normalized.slice(0, 300);
       }
     } else if (response.status >= 500) {
       detail = 'Backend server is temporarily unavailable. Please try again.';
@@ -173,14 +182,14 @@ export async function uploadPdf(
   formData.append('file', {
     uri: fileUri,
     name: fileName,
-    type: 'application/pdf',
+    type: inferUploadMimeType(fileName),
   } as any);
   if (password) formData.append('password', password);
   if (bankHint) formData.append('bank_hint', bankHint);
   if (accountTypeHint && accountTypeHint !== 'auto') {
     formData.append('account_type_hint', accountTypeHint);
   }
-  if (documentTypeHint && documentTypeHint !== 'auto') {
+  if (documentTypeHint) {
     formData.append('document_type_hint', documentTypeHint);
   }
   if (forceReprocess) formData.append('force_reprocess', 'true');
@@ -197,6 +206,16 @@ export async function uploadPdf(
     '/upload/pdf',
     { method: 'POST', body: formData },
   );
+}
+
+function inferUploadMimeType(fileName: string): string {
+  const lowerName = fileName.toLowerCase();
+  if (lowerName.endsWith('.csv')) return 'text/csv';
+  if (lowerName.endsWith('.xlsx')) {
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  }
+  if (lowerName.endsWith('.xls')) return 'application/vnd.ms-excel';
+  return 'application/pdf';
 }
 
 export async function getRecentUploads(limit: number = 20) {

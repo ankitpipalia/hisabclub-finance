@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import type { ReconciliationResponse, TaxComplianceResponse, TaxActionItem } from '../api/client';
 import { ShieldAlert, Link2, RefreshCw } from 'lucide-react';
@@ -16,31 +16,59 @@ function severityClass(item: TaxActionItem) {
   return 'hc-badge hc-badge-accent';
 }
 
+type FinancialYearOption = {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+};
+
+function buildFinancialYearOptions(previousCount: number): FinancialYearOption[] {
+  const today = new Date();
+  const runningStartYear =
+    today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1;
+  const options: FinancialYearOption[] = [];
+  for (let offset = 0; offset <= previousCount; offset += 1) {
+    const startYear = runningStartYear - offset;
+    const endYear = startYear + 1;
+    const shortEnd = String(endYear).slice(-2);
+    options.push({
+      key: `${startYear}-${shortEnd}`,
+      label: offset === 0 ? `Running FY ${startYear}-${shortEnd}` : `FY ${startYear}-${shortEnd}`,
+      from: `${startYear}-04-01`,
+      to: `${endYear}-03-31`,
+    });
+  }
+  return options;
+}
+
 export default function TaxPage() {
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const fyOptions = useMemo(() => buildFinancialYearOptions(5), []);
+  const [selectedFy, setSelectedFy] = useState(fyOptions[0]?.key ?? '');
   const [taxReport, setTaxReport] = useState<TaxComplianceResponse | null>(null);
   const [reconciliations, setReconciliations] = useState<ReconciliationResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const load = async () => {
+  const load = async (fyKey?: string) => {
+    const selectedRange =
+      fyOptions.find((option) => option.key === (fyKey ?? selectedFy)) ?? fyOptions[0];
+    if (!selectedRange) return;
+
     setLoading(true);
     setError('');
     try {
       const [tax, rec] = await Promise.all([
-        api.getTaxCompliance({ from: from || undefined, to: to || undefined }),
+        api.getTaxCompliance({ from: selectedRange.from, to: selectedRange.to }),
         api.getTransferReconciliations({
-          from: from || undefined,
-          to: to || undefined,
+          from: selectedRange.from,
+          to: selectedRange.to,
           max_gap_days: 5,
           limit: 500,
         }),
       ]);
       setTaxReport(tax);
       setReconciliations(rec);
-      if (!from) setFrom(tax.period_start);
-      if (!to) setTo(tax.period_end);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load tax/audit insights';
       setError(message);
@@ -50,9 +78,9 @@ export default function TaxPage() {
   };
 
   useEffect(() => {
-    load();
+    void load(selectedFy);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedFy]);
 
   return (
     <div className="hc-page">
@@ -64,26 +92,32 @@ export default function TaxPage() {
             New-regime tax estimate, document coverage, and transfer reconciliation.
           </p>
         </div>
-        <button onClick={load} className="hc-btn hc-btn-outline">
+        <button onClick={() => void load(selectedFy)} className="hc-btn hc-btn-outline">
           <RefreshCw size={14} strokeWidth={1.5} />
           Refresh
         </button>
       </header>
 
       <section className="hc-panel">
-        <div className="hc-grid-3">
+        <div className="hc-grid-2">
           <div>
-            <label className="hc-label">From</label>
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="hc-input" />
-          </div>
-          <div>
-            <label className="hc-label">To</label>
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="hc-input" />
+            <label className="hc-label">Financial Year</label>
+            <select
+              value={selectedFy}
+              onChange={(e) => setSelectedFy(e.target.value)}
+              className="hc-select"
+            >
+              {fyOptions.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="hc-label">Apply</label>
-            <button onClick={load} className="hc-btn hc-btn-solid" style={{ width: '100%' }}>
-              Apply Range
+            <button onClick={() => void load(selectedFy)} className="hc-btn hc-btn-solid" style={{ width: '100%' }}>
+              Refresh FY
             </button>
           </div>
         </div>
