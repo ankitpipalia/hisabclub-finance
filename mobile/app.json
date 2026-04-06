@@ -3,7 +3,6 @@
     "name": "HisabClub",
     "slug": "hisabclub",
     "version": "1.0.0",
-    "newArchEnabled": false,
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -38,7 +37,8 @@
           }
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      "expo-secure-store"
     ],
     "platforms": [
       "android",
