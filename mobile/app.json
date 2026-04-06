@@ -24,6 +24,10 @@
         "android.permission.RECEIVE_SMS"
       ]
     },
+    "ios": {
+      "bundleIdentifier": "com.hisabclub.app",
+      "supportsTablet": false
+    },
     "plugins": [
       [
         "expo-build-properties",
@@ -36,7 +40,8 @@
       "expo-sharing"
     ],
     "platforms": [
-      "android"
+      "android",
+      "ios"
     ]
   }
 }
