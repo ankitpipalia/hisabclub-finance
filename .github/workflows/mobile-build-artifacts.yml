@@ -9,6 +9,7 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/mobile-build-artifacts.yml"
+      - ".github/scripts/**"
 
 permissions:
   contents: read
@@ -25,15 +26,18 @@ jobs:
   android-apk:
     name: Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: mobile
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        timeout-minutes: 5
 
       - name: Setup Node
         uses: actions/setup-node@v4
+        timeout-minutes: 5
         with:
           node-version: "20"
           cache: "npm"
@@ -41,27 +45,33 @@ jobs:
 
       - name: Setup Java
         uses: actions/setup-java@v4
+        timeout-minutes: 5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        timeout-minutes: 10
 
       - name: Install dependencies
+        timeout-minutes: 12
         run: npm ci
 
       - name: Generate Android native project
+        timeout-minutes: 8
         run: npx expo prebuild --platform android --no-install --clean
 
       - name: Build debug APK
+        timeout-minutes: 20
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --max-workers=2
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
+        timeout-minutes: 5
         with:
           name: hisabclub-android-debug-apk-${{ github.sha }}
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
@@ -70,48 +80,62 @@ jobs:
   ios-simulator-app:
     name: iOS Simulator App
     runs-on: macos-15
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: mobile
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        timeout-minutes: 5
 
       - name: Setup Node
         uses: actions/setup-node@v4
+        timeout-minutes: 5
         with:
           node-version: "20"
           cache: "npm"
           cache-dependency-path: mobile/package-lock.json
 
       - name: Install dependencies
+        timeout-minutes: 12
         run: npm ci
 
       - name: Generate iOS native project
+        timeout-minutes: 8
         run: npx expo prebuild --platform ios --no-install --clean
 
+      - name: Patch Podfile for Xcode 16 Swift mode
+        timeout-minutes: 3
+        run: python ../.github/scripts/patch_ios_podfile.py ios/Podfile
+
       - name: Install CocoaPods
+        timeout-minutes: 15
         run: |
           cd ios
           pod install
 
       - name: Build simulator app
+        timeout-minutes: 20
         run: |
           WORKSPACE="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
           SCHEME="$(basename "$WORKSPACE" .xcworkspace)"
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
-            -configuration Release \
+            -configuration Debug \
             -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
             build
           APP_PATH="$(find build/Build/Products -type d -name '*.app' -print -quit)"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" hisabclub-ios-simulator-app.zip
 
       - name: Upload iOS artifact
         uses: actions/upload-artifact@v4
+        timeout-minutes: 5
         with:
           name: hisabclub-ios-simulator-app-${{ github.sha }}
           path: mobile/hisabclub-ios-simulator-app.zip
