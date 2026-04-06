@@ -9,7 +9,6 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/mobile-build-artifacts.yml"
-      - ".github/scripts/**"
 
 permissions:
   contents: read
@@ -34,6 +33,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         timeout-minutes: 5
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        timeout-minutes: 5
+        with:
+          xcode-version: "16.2"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -104,10 +109,6 @@ jobs:
       - name: Generate iOS native project
         timeout-minutes: 8
         run: npx expo prebuild --platform ios --no-install --clean
-
-      - name: Patch Podfile for Xcode 16 Swift mode
-        timeout-minutes: 3
-        run: python ../.github/scripts/patch_ios_podfile.py ios/Podfile
 
       - name: Install CocoaPods
         timeout-minutes: 15
