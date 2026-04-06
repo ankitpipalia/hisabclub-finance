@@ -25,12 +25,18 @@
       ]
     },
     "plugins": [
-      ["expo-build-properties", {
-        "android": {
-          "minSdkVersion": 24
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24
+          }
         }
-      }]
+      ],
+      "expo-sharing"
     ],
-    "platforms": ["android"]
+    "platforms": [
+      "android"
+    ]
   }
 }

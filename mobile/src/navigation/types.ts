@@ -9,11 +9,19 @@ export type MainTabParamList = {
   Home: undefined;
   Transactions: undefined;
   Insights: undefined;
+  Tax: undefined;
   Settings: undefined;
 };
 
 export type RootStackParamList = {
   MainTabs: undefined;
+  Onboarding: undefined;
+  Accounts: undefined;
+  Assistant: { threadId?: string } | undefined;
+  NetWorth: undefined;
+  Subscriptions: undefined;
+  Tax: undefined;
+  StatementReview: { statementId: string };
   TransactionDetail: { id: string };
   SmsSync: undefined;
   Upload: undefined;

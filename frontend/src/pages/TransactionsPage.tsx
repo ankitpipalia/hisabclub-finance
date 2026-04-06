@@ -1,9 +1,46 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Scissors, Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
+
 import { api } from '../api/client';
-import type { Transaction, TransactionFilters } from '../api/client';
+import type { Category, Transaction, TransactionFilters } from '../api/client';
 
 type TimelinePreset = 'all' | '7d' | '30d' | '90d' | 'fy' | 'custom';
+
+type BulkEditorState = {
+  applyCategory: boolean;
+  category_id: string;
+  applyNature: boolean;
+  transaction_nature: string;
+  applyNotes: boolean;
+  notes: string;
+  applyTags: boolean;
+  tagsText: string;
+  applyExclude: boolean;
+  is_excluded: boolean;
+};
+
+type SplitPartDraft = {
+  amount: string;
+  merchant_raw: string;
+  category_id: string;
+  transaction_nature: string;
+  notes: string;
+  tagsText: string;
+};
+
+const emptyBulkEditor = (): BulkEditorState => ({
+  applyCategory: false,
+  category_id: '',
+  applyNature: false,
+  transaction_nature: '',
+  applyNotes: false,
+  notes: '',
+  applyTags: false,
+  tagsText: '',
+  applyExclude: false,
+  is_excluded: false,
+});
 
 function toInputDate(value: Date): string {
   return value.toISOString().slice(0, 10);
@@ -36,8 +73,51 @@ function getPresetRange(preset: TimelinePreset): { from: string; to: string } {
   return { from: '', to: '' };
 }
 
+function formatAmount(amount: number, dir: string) {
+  const formatted = new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 2,
+  }).format(amount);
+  return dir === 'credit' ? `+${formatted}` : formatted;
+}
+
+function formatDate(dateStr: string) {
+  return new Date(dateStr).toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function buildDefaultSplitParts(txn: Transaction): SplitPartDraft[] {
+  const totalPaise = Math.round(txn.amount * 100);
+  const firstPaise = Math.floor(totalPaise / 2);
+  const secondPaise = totalPaise - firstPaise;
+  const defaultNature = txn.transaction_nature || (txn.direction === 'credit' ? 'income' : 'expense');
+  return [
+    {
+      amount: (firstPaise / 100).toFixed(2),
+      merchant_raw: txn.merchant_raw,
+      category_id: '',
+      transaction_nature: defaultNature,
+      notes: '',
+      tagsText: '',
+    },
+    {
+      amount: (secondPaise / 100).toFixed(2),
+      merchant_raw: txn.merchant_raw,
+      category_id: '',
+      transaction_nature: defaultNature,
+      notes: '',
+      tagsText: '',
+    },
+  ];
+}
+
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -52,6 +132,14 @@ export default function TransactionsPage() {
   const [reclassifyInfo, setReclassifyInfo] = useState('');
   const [reconcilingUpi, setReconcilingUpi] = useState(false);
   const [upiInfo, setUpiInfo] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkEditor, setBulkEditor] = useState<BulkEditorState>(emptyBulkEditor());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkInfo, setBulkInfo] = useState('');
+  const [splitEditorOpen, setSplitEditorOpen] = useState(false);
+  const [splitParts, setSplitParts] = useState<SplitPartDraft[]>([]);
+  const [splitBusy, setSplitBusy] = useState(false);
+  const [splitInfo, setSplitInfo] = useState('');
 
   const perPage = 25;
 
@@ -67,12 +155,18 @@ export default function TransactionsPage() {
     return filters;
   }, [direction, fromDate, page, search, toDate]);
 
+  const selectedTransaction =
+    selectedIds.length === 1 ? transactions.find((txn) => txn.id === selectedIds[0]) ?? null : null;
+
   const fetchTransactions = async () => {
     setLoading(true);
     try {
       const res = await api.getTransactions(currentFilters);
       setTransactions(res.items);
       setTotal(res.total);
+      setSelectedIds([]);
+      setSplitEditorOpen(false);
+      setSplitParts([]);
 
       if (!autoCategorizeChecked && res.items.some((item) => !item.category_name)) {
         setAutoCategorizeChecked(true);
@@ -97,6 +191,21 @@ export default function TransactionsPage() {
     fetchTransactions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, direction, fromDate, toDate]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const result = await api.getCategories();
+        if (active) setCategories(result);
+      } catch (err) {
+        console.error('Failed to fetch categories:', err);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,23 +264,136 @@ export default function TransactionsPage() {
     }
   };
 
-  const totalPages = Math.ceil(total / perPage);
-
-  const formatAmount = (amount: number, dir: string) => {
-    const formatted = new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR',
-      maximumFractionDigits: 2,
-    }).format(amount);
-    return dir === 'credit' ? `+${formatted}` : formatted;
+  const toggleSelection = (txnId: string) => {
+    setSelectedIds((current) =>
+      current.includes(txnId) ? current.filter((id) => id !== txnId) : [...current, txnId],
+    );
   };
 
-  const formatDate = (dateStr: string) =>
-    new Date(dateStr).toLocaleDateString('en-IN', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    });
+  const toggleSelectPage = () => {
+    if (selectedIds.length === transactions.length && transactions.length > 0) {
+      setSelectedIds([]);
+      return;
+    }
+    setSelectedIds(transactions.map((txn) => txn.id));
+  };
+
+  const openSplitEditor = (txn: Transaction) => {
+    setSelectedIds([txn.id]);
+    setSplitParts(buildDefaultSplitParts(txn));
+    setSplitEditorOpen(true);
+    setSplitInfo('');
+  };
+
+  const addSplitPart = () => {
+    if (!selectedTransaction) return;
+    setSplitParts((current) => [
+      ...current,
+      {
+        amount: '0.00',
+        merchant_raw: selectedTransaction.merchant_raw,
+        category_id: '',
+        transaction_nature: selectedTransaction.transaction_nature || 'expense',
+        notes: '',
+        tagsText: '',
+      },
+    ]);
+  };
+
+  const updateSplitPart = (index: number, patch: Partial<SplitPartDraft>) => {
+    setSplitParts((current) => current.map((part, idx) => (idx === index ? { ...part, ...patch } : part)));
+  };
+
+  const removeSplitPart = (index: number) => {
+    setSplitParts((current) => current.filter((_, idx) => idx !== index));
+  };
+
+  const handleBulkApply = async () => {
+    if (!selectedIds.length) return;
+    const payload: {
+      transaction_ids: string[];
+      category_id?: string | null;
+      transaction_nature?: string | null;
+      notes?: string | null;
+      tags?: string[] | null;
+      is_excluded?: boolean | null;
+    } = {
+      transaction_ids: selectedIds,
+    };
+    if (bulkEditor.applyCategory) payload.category_id = bulkEditor.category_id || null;
+    if (bulkEditor.applyNature) payload.transaction_nature = bulkEditor.transaction_nature || null;
+    if (bulkEditor.applyNotes) payload.notes = bulkEditor.notes || null;
+    if (bulkEditor.applyTags) {
+      payload.tags = bulkEditor.tagsText
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+    }
+    if (bulkEditor.applyExclude) payload.is_excluded = bulkEditor.is_excluded;
+    if (Object.keys(payload).length === 1) {
+      setBulkInfo('Select at least one field to update.');
+      return;
+    }
+
+    setBulkBusy(true);
+    try {
+      const result = await api.bulkUpdateTransactions(payload);
+      setBulkInfo(`Updated ${result.updated_count} transaction(s).`);
+      setBulkEditor(emptyBulkEditor());
+      await fetchTransactions();
+    } catch (err) {
+      console.error('Failed bulk update:', err);
+      setBulkInfo(err instanceof Error ? err.message : 'Bulk update failed.');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleSplitTransaction = async () => {
+    if (!selectedTransaction) return;
+    if (splitParts.length < 2) {
+      setSplitInfo('At least two split parts are required.');
+      return;
+    }
+    const sum = splitParts.reduce((totalValue, part) => totalValue + Math.round(Number(part.amount || 0) * 100), 0);
+    const original = Math.round(selectedTransaction.amount * 100);
+    if (sum !== original) {
+      setSplitInfo(
+        `Split amounts must add up to ${formatAmount(selectedTransaction.amount, selectedTransaction.direction)}.`,
+      );
+      return;
+    }
+
+    setSplitBusy(true);
+    try {
+      const result = await api.splitTransaction(selectedTransaction.id, {
+        exclude_original: true,
+        parts: splitParts.map((part) => ({
+          amount: Number(part.amount),
+          merchant_raw: part.merchant_raw,
+          category_id: part.category_id || null,
+          transaction_nature: part.transaction_nature || null,
+          notes: part.notes || null,
+          tags: part.tagsText
+            .split(',')
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+        })),
+      });
+      setSplitInfo(`Created ${result.created_transactions.length} split transaction(s).`);
+      setSplitEditorOpen(false);
+      setSplitParts([]);
+      setSelectedIds([]);
+      await fetchTransactions();
+    } catch (err) {
+      console.error('Failed split transaction:', err);
+      setSplitInfo(err instanceof Error ? err.message : 'Split transaction failed.');
+    } finally {
+      setSplitBusy(false);
+    }
+  };
+
+  const totalPages = Math.ceil(total / perPage);
 
   return (
     <div className="hc-page">
@@ -179,7 +401,7 @@ export default function TransactionsPage() {
         <div>
           <p className="hc-kicker">Ledger</p>
           <h1 className="hc-page-title">Transactions</h1>
-          <p className="hc-page-subtitle">Search and filter normalized debit/credit entries across all sources.</p>
+          <p className="hc-page-subtitle">Search, bulk edit, and split normalized ledger entries.</p>
         </div>
         <div className="hc-inline-actions">
           <button
@@ -276,6 +498,259 @@ export default function TransactionsPage() {
       {autoCategorizeInfo && <div className="hc-msg hc-msg-ok">{autoCategorizeInfo}</div>}
       {reclassifyInfo && <div className="hc-msg hc-msg-ok">{reclassifyInfo}</div>}
       {upiInfo && <div className="hc-msg hc-msg-ok">{upiInfo}</div>}
+      {bulkInfo && <div className="hc-msg hc-msg-ok">{bulkInfo}</div>}
+      {splitInfo && <div className="hc-msg hc-msg-ok">{splitInfo}</div>}
+
+      <section className="hc-panel">
+        <div className="hc-panel-head">
+          <div>
+            <h2 className="hc-panel-title">Selection Tools</h2>
+            <p className="hc-panel-sub">{selectedIds.length} transaction(s) selected on this page.</p>
+          </div>
+          <div className="hc-inline-actions">
+            <button type="button" className="hc-btn hc-btn-outline" onClick={toggleSelectPage}>
+              {selectedIds.length === transactions.length && transactions.length > 0 ? 'Clear Page' : 'Select Page'}
+            </button>
+            <button type="button" className="hc-btn hc-btn-outline" onClick={() => setSelectedIds([])}>
+              Clear Selection
+            </button>
+            <button
+              type="button"
+              className="hc-btn hc-btn-outline"
+              disabled={!selectedTransaction}
+              onClick={() => selectedTransaction && openSplitEditor(selectedTransaction)}
+            >
+              <Scissors size={16} strokeWidth={1.5} />
+              Split Selected
+            </button>
+          </div>
+        </div>
+
+        <div className="hc-grid-4">
+          <label className="hc-field">
+            <span className="hc-label">
+              <input
+                type="checkbox"
+                checked={bulkEditor.applyCategory}
+                onChange={(e) => setBulkEditor((current) => ({ ...current, applyCategory: e.target.checked }))}
+                style={{ marginRight: '0.5rem' }}
+              />
+              Set Category
+            </span>
+            <select
+              className="hc-select"
+              value={bulkEditor.category_id}
+              onChange={(e) => setBulkEditor((current) => ({ ...current, category_id: e.target.value }))}
+              disabled={!bulkEditor.applyCategory}
+            >
+              <option value="">Clear Category</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="hc-field">
+            <span className="hc-label">
+              <input
+                type="checkbox"
+                checked={bulkEditor.applyNature}
+                onChange={(e) => setBulkEditor((current) => ({ ...current, applyNature: e.target.checked }))}
+                style={{ marginRight: '0.5rem' }}
+              />
+              Set Nature
+            </span>
+            <select
+              className="hc-select"
+              value={bulkEditor.transaction_nature}
+              onChange={(e) => setBulkEditor((current) => ({ ...current, transaction_nature: e.target.value }))}
+              disabled={!bulkEditor.applyNature}
+            >
+              <option value="">Choose nature</option>
+              {['expense', 'income', 'transfer_internal', 'refund', 'investment', 'tax'].map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="hc-field">
+            <span className="hc-label">
+              <input
+                type="checkbox"
+                checked={bulkEditor.applyNotes}
+                onChange={(e) => setBulkEditor((current) => ({ ...current, applyNotes: e.target.checked }))}
+                style={{ marginRight: '0.5rem' }}
+              />
+              Set Notes
+            </span>
+            <input
+              type="text"
+              className="hc-input"
+              value={bulkEditor.notes}
+              onChange={(e) => setBulkEditor((current) => ({ ...current, notes: e.target.value }))}
+              disabled={!bulkEditor.applyNotes}
+              placeholder="Optional analyst note"
+            />
+          </label>
+
+          <label className="hc-field">
+            <span className="hc-label">
+              <input
+                type="checkbox"
+                checked={bulkEditor.applyTags}
+                onChange={(e) => setBulkEditor((current) => ({ ...current, applyTags: e.target.checked }))}
+                style={{ marginRight: '0.5rem' }}
+              />
+              Replace Tags
+            </span>
+            <input
+              type="text"
+              className="hc-input"
+              value={bulkEditor.tagsText}
+              onChange={(e) => setBulkEditor((current) => ({ ...current, tagsText: e.target.value }))}
+              disabled={!bulkEditor.applyTags}
+              placeholder="comma,separated,tags"
+            />
+          </label>
+        </div>
+
+        <div className="hc-inline-actions" style={{ marginTop: '1rem', justifyContent: 'space-between' }}>
+          <label className="hc-field" style={{ maxWidth: 260 }}>
+            <span className="hc-label">
+              <input
+                type="checkbox"
+                checked={bulkEditor.applyExclude}
+                onChange={(e) => setBulkEditor((current) => ({ ...current, applyExclude: e.target.checked }))}
+                style={{ marginRight: '0.5rem' }}
+              />
+              Set Excluded State
+            </span>
+            <select
+              className="hc-select"
+              value={bulkEditor.is_excluded ? 'true' : 'false'}
+              onChange={(e) => setBulkEditor((current) => ({ ...current, is_excluded: e.target.value === 'true' }))}
+              disabled={!bulkEditor.applyExclude}
+            >
+              <option value="false">Keep Included</option>
+              <option value="true">Exclude from ledger views</option>
+            </select>
+          </label>
+
+          <button
+            type="button"
+            className="hc-btn hc-btn-solid"
+            disabled={!selectedIds.length || bulkBusy}
+            onClick={handleBulkApply}
+          >
+            {bulkBusy ? 'Applying...' : `Apply to ${selectedIds.length || 0} Selected`}
+          </button>
+        </div>
+      </section>
+
+      {splitEditorOpen && selectedTransaction && (
+        <section className="hc-panel">
+          <div className="hc-panel-head">
+            <div>
+              <h2 className="hc-panel-title">Split Transaction</h2>
+              <p className="hc-panel-sub">
+                Splitting {formatAmount(selectedTransaction.amount, selectedTransaction.direction)} from{' '}
+                {selectedTransaction.merchant_normalized || selectedTransaction.merchant_raw}.
+              </p>
+            </div>
+            <div className="hc-inline-actions">
+              <button type="button" className="hc-btn hc-btn-outline" onClick={addSplitPart}>
+                Add Part
+              </button>
+              <button
+                type="button"
+                className="hc-btn hc-btn-solid"
+                disabled={splitBusy}
+                onClick={handleSplitTransaction}
+              >
+                {splitBusy ? 'Splitting...' : 'Create Split'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: '1rem' }}>
+            {splitParts.map((part, index) => (
+              <div key={`split-${index}`} className="hc-panel" style={{ padding: '1rem' }}>
+                <div className="hc-inline-actions" style={{ justifyContent: 'space-between' }}>
+                  <h3 className="hc-panel-title">Part {index + 1}</h3>
+                  <button
+                    type="button"
+                    className="hc-btn hc-btn-outline"
+                    disabled={splitParts.length <= 2}
+                    onClick={() => removeSplitPart(index)}
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div className="hc-grid-4" style={{ marginTop: '0.85rem' }}>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="hc-input"
+                    value={part.amount}
+                    onChange={(e) => updateSplitPart(index, { amount: e.target.value })}
+                    placeholder="Amount"
+                  />
+                  <input
+                    type="text"
+                    className="hc-input"
+                    value={part.merchant_raw}
+                    onChange={(e) => updateSplitPart(index, { merchant_raw: e.target.value })}
+                    placeholder="Description"
+                  />
+                  <select
+                    className="hc-select"
+                    value={part.category_id}
+                    onChange={(e) => updateSplitPart(index, { category_id: e.target.value })}
+                  >
+                    <option value="">Keep Original Category</option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="hc-select"
+                    value={part.transaction_nature}
+                    onChange={(e) => updateSplitPart(index, { transaction_nature: e.target.value })}
+                  >
+                    {['expense', 'income', 'transfer_internal', 'refund', 'investment', 'tax'].map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="hc-grid-2" style={{ marginTop: '0.85rem' }}>
+                  <input
+                    type="text"
+                    className="hc-input"
+                    value={part.notes}
+                    onChange={(e) => updateSplitPart(index, { notes: e.target.value })}
+                    placeholder="Notes"
+                  />
+                  <input
+                    type="text"
+                    className="hc-input"
+                    value={part.tagsText}
+                    onChange={(e) => updateSplitPart(index, { tagsText: e.target.value })}
+                    placeholder="comma,separated,tags"
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="hc-table-wrap">
         {loading ? (
@@ -283,25 +758,46 @@ export default function TransactionsPage() {
         ) : transactions.length === 0 ? (
           <div className="hc-panel">No transactions found. Upload a statement to get started.</div>
         ) : (
-          <table className="hc-table" style={{ minWidth: 960 }}>
+          <table className="hc-table" style={{ minWidth: 1080 }}>
             <thead>
               <tr>
+                <th style={{ width: 48 }}>Sel</th>
                 <th>Date</th>
                 <th>Description</th>
                 <th>Category</th>
                 <th>Bank</th>
+                <th>Nature</th>
                 <th style={{ textAlign: 'right' }}>Amount</th>
+                <th style={{ width: 90 }}>Split</th>
               </tr>
             </thead>
             <tbody>
               {transactions.map((txn) => (
                 <tr key={txn.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(txn.id)}
+                      onChange={() => toggleSelection(txn.id)}
+                      aria-label={`Select transaction ${txn.id}`}
+                    />
+                  </td>
                   <td style={{ whiteSpace: 'nowrap', color: 'var(--hc-muted-fg)' }}>{formatDate(txn.transaction_date)}</td>
                   <td>
                     <div style={{ fontWeight: 600 }}>{txn.merchant_normalized || txn.merchant_raw}</div>
+                    <div style={{ marginTop: '0.25rem' }}>
+                      <Link to={`/transactions/${txn.id}`} className="hc-panel-sub">
+                        Open detail
+                      </Link>
+                    </div>
                     {txn.merchant_normalized && txn.merchant_normalized !== txn.merchant_raw && (
                       <div style={{ fontSize: '0.72rem', color: 'var(--hc-muted-fg)', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {txn.merchant_raw}
+                      </div>
+                    )}
+                    {txn.notes && (
+                      <div style={{ fontSize: '0.72rem', color: 'var(--hc-muted-fg)', marginTop: '0.2rem' }}>
+                        {txn.notes}
                       </div>
                     )}
                   </td>
@@ -309,6 +805,9 @@ export default function TransactionsPage() {
                     {txn.category_name ? <span className="hc-badge">{txn.category_name}</span> : <span className="hc-panel-sub">Uncategorized</span>}
                   </td>
                   <td style={{ color: 'var(--hc-muted-fg)' }}>{txn.bank_label || txn.bank_name || '-'}</td>
+                  <td>
+                    <span className="hc-badge">{txn.transaction_nature}</span>
+                  </td>
                   <td
                     style={{
                       textAlign: 'right',
@@ -318,6 +817,15 @@ export default function TransactionsPage() {
                     }}
                   >
                     {formatAmount(txn.amount, txn.direction)}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="hc-btn hc-btn-outline"
+                      onClick={() => openSplitEditor(txn)}
+                    >
+                      <Scissors size={14} strokeWidth={1.5} />
+                    </button>
                   </td>
                 </tr>
               ))}

@@ -8,12 +8,17 @@ import {
   Alert,
 } from 'react-native';
 import { Card, Divider, ActivityIndicator, Button } from 'react-native-paper';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Statement } from '../api/types';
 import * as api from '../api/client';
 import EmptyState from '../components/EmptyState';
 import { formatDate, formatAmount } from '../utils/formatters';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
+import type { RootStackParamList } from '../navigation/types';
+
+type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
 function getStatusColor(status: string, colors: AppThemeColors): string {
   switch (status) {
@@ -44,6 +49,7 @@ function StatementCard({
   deleting,
   onRereview,
   onDelete,
+  onReview,
 }: {
   statement: Statement;
   colors: AppThemeColors;
@@ -51,6 +57,7 @@ function StatementCard({
   deleting: boolean;
   onRereview: (statement: Statement) => void;
   onDelete: (statement: Statement) => void;
+  onReview: (statement: Statement) => void;
 }) {
   const styles = useMemo(() => createStyles(colors), [colors]);
 
@@ -133,6 +140,14 @@ function StatementCard({
 
         <View style={styles.actionRow}>
           <Button
+            mode="contained-tonal"
+            onPress={() => onReview(statement)}
+            disabled={deleting || rereviewing}
+            compact
+          >
+            Review
+          </Button>
+          <Button
             mode="outlined"
             onPress={() => onRereview(statement)}
             loading={rereviewing}
@@ -158,6 +173,7 @@ function StatementCard({
 }
 
 export default function StatementsScreen() {
+  const navigation = useNavigation<NavProp>();
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const queryClient = useQueryClient();
@@ -210,6 +226,10 @@ export default function StatementsScreen() {
     );
   };
 
+  const handleReview = (statement: Statement) => {
+    navigation.navigate('StatementReview', { statementId: statement.id });
+  };
+
   if (isLoading) {
     return (
       <View style={styles.centered}>
@@ -241,6 +261,7 @@ export default function StatementsScreen() {
           deleting={deletingId === item.id}
           onRereview={handleRereview}
           onDelete={handleDelete}
+          onReview={handleReview}
         />
       )}
       refreshControl={

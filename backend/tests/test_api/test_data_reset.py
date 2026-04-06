@@ -54,3 +54,18 @@ async def test_delete_user_rows_transaction_source_delete_targets_parsed_and_can
     assert "canonical_txn_id" in ts_delete_sql
     assert "parsed_txn_id" in ts_delete_sql
 
+
+@pytest.mark.asyncio
+async def test_delete_user_rows_includes_balance_snapshots():
+    db = _FakeDb()
+    plan = await _delete_user_rows(db, user_id=uuid.uuid4())
+
+    assert "balance_snapshots" in plan.deleted_rows
+
+
+@pytest.mark.asyncio
+async def test_delete_user_rows_includes_transaction_splits():
+    db = _FakeDb()
+    plan = await _delete_user_rows(db, user_id=uuid.uuid4())
+
+    assert "transaction_splits" in plan.deleted_rows

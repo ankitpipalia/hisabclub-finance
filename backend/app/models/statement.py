@@ -49,6 +49,9 @@ class Statement(UUIDPrimaryKeyMixin, Base):
     pdf_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("raw_pdfs.id")
     )
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("accounts.id")
+    )
     bank_name: Mapped[str] = mapped_column(String(50), nullable=False)
     account_type: Mapped[str] = mapped_column(
         String(50), nullable=False
@@ -93,8 +96,12 @@ class Statement(UUIDPrimaryKeyMixin, Base):
     )
 
     user = relationship("User", back_populates="statements")
+    account = relationship("Account", back_populates="statements")
     pdf = relationship("RawPdf", back_populates="statement")
+    balance_snapshots = relationship("BalanceSnapshot", back_populates="statement")
     parsed_transactions = relationship("ParsedTransaction", back_populates="statement")
+    annotations = relationship("TransactionAnnotation", back_populates="statement")
+    conversation_threads = relationship("ConversationThread", back_populates="statement")
 
     @validates("parse_status")
     def _validate_parse_status(self, _key: str, value: str | None) -> str:

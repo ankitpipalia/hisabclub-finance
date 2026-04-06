@@ -8,14 +8,17 @@ from app.models.base import Base
 
 # Import all models so Alembic can detect them
 from app.models import (  # noqa: F401
+    account,
     bill,
     budget,
     canonical_transaction,
     category,
     connected_account,
+    conversation,
     document_artifact,
     document_knowledge_chunk,
     extraction_job,
+    institution,
     institution_parser_support,
     institution_password_pattern,
     insights,
@@ -27,6 +30,8 @@ from app.models import (  # noqa: F401
     statement,
     statement_period_coverage,
     sync_cursor,
+    tax_portal_data,
+    transaction_annotation,
     transfer_match,
     transaction_source,
     user,

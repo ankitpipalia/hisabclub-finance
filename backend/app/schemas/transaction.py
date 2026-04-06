@@ -13,6 +13,7 @@ class TransactionResponse(BaseModel):
     currency: str
     merchant_raw: str
     merchant_normalized: str | None
+    category_id: str | None = None
     category_name: str | None = None
     bank_name: str | None
     bank_label: str | None = None
@@ -20,6 +21,7 @@ class TransactionResponse(BaseModel):
     account_masked: str | None
     is_recurring: bool
     is_anomalous: bool
+    is_excluded: bool
     notes: str | None
     tags: list[str] | None
     created_at: datetime
@@ -44,13 +46,61 @@ class TransactionUpdateRequest(BaseModel):
     is_excluded: bool | None = None
 
 
+class TransactionBulkUpdateRequest(TransactionUpdateRequest):
+    transaction_ids: list[str]
+
+
+class TransactionBulkUpdateResponse(BaseModel):
+    updated_count: int
+    items: list[TransactionResponse]
+
+
+class TransactionSplitPartRequest(BaseModel):
+    amount: float
+    merchant_raw: str | None = None
+    category_id: str | None = None
+    merchant_id: str | None = None
+    transaction_nature: str | None = None
+    notes: str | None = None
+    tags: list[str] | None = None
+
+
+class TransactionSplitRequest(BaseModel):
+    parts: list[TransactionSplitPartRequest]
+    exclude_original: bool = True
+
+
+class TransactionSplitResponse(BaseModel):
+    original_transaction: TransactionResponse
+    created_transactions: list[TransactionResponse]
+
+
 class TransactionSourceResponse(BaseModel):
+    parsed_txn_id: str
+    statement_id: str | None = None
     source_type: str
     description_raw: str
     confidence: float
     extraction_method: str
     match_method: str
     is_primary: bool
+
+
+class TransactionOverrideResponse(BaseModel):
+    id: str
+    field_name: str
+    old_value: str | None
+    new_value: str
+    override_reason: str | None
+    created_at: datetime
+
+
+class TransactionDetailResponse(BaseModel):
+    transaction: TransactionResponse
+    sources: list[TransactionSourceResponse]
+    overrides: list[TransactionOverrideResponse]
+    split_parent: TransactionResponse | None = None
+    split_children: list[TransactionResponse]
 
 
 class AutoCategorizeResponse(BaseModel):

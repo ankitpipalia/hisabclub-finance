@@ -9,11 +9,14 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.account import Account
 from app.models.bill import Bill
+from app.models.balance_snapshot import BalanceSnapshot
 from app.models.budget import Budget
 from app.models.canonical_transaction import CanonicalTransaction
 from app.models.category import Category
 from app.models.connected_account import ConnectedAccount
+from app.models.conversation import ConversationMessage, ConversationThread
 from app.models.document_artifact import DocumentArtifact
 from app.models.document_knowledge_chunk import DocumentKnowledgeChunk
 from app.models.extraction_job import ExtractionJob
@@ -27,7 +30,10 @@ from app.models.review_task import ReviewTask
 from app.models.statement import Statement
 from app.models.statement_period_coverage import StatementPeriodCoverage
 from app.models.sync_cursor import SyncCursor
+from app.models.tax_portal_data import TaxPortalData
+from app.models.transaction_annotation import TransactionAnnotation
 from app.models.transaction_source import TransactionSource
+from app.models.transaction_split import TransactionSplit
 from app.models.transfer_match import TransferMatch
 from app.models.user_override import UserMerchantRule, UserOverride
 
@@ -134,11 +140,25 @@ async def _delete_user_rows(db: AsyncSession, *, user_id: uuid.UUID) -> _ResetPl
     await run_delete("user_merchant_rules", delete(UserMerchantRule).where(UserMerchantRule.user_id == user_id))
     await run_delete("user_overrides", delete(UserOverride).where(UserOverride.user_id == user_id))
     await run_delete("transfer_matches", delete(TransferMatch).where(TransferMatch.user_id == user_id))
+    await run_delete("transaction_splits", delete(TransactionSplit).where(TransactionSplit.user_id == user_id))
     await run_delete(
         "statement_period_coverage",
         delete(StatementPeriodCoverage).where(StatementPeriodCoverage.user_id == user_id),
     )
     await run_delete("review_tasks", delete(ReviewTask).where(ReviewTask.user_id == user_id))
+    await run_delete(
+        "conversation_messages",
+        delete(ConversationMessage).where(ConversationMessage.user_id == user_id),
+    )
+    await run_delete(
+        "conversation_threads",
+        delete(ConversationThread).where(ConversationThread.user_id == user_id),
+    )
+    await run_delete(
+        "transaction_annotations",
+        delete(TransactionAnnotation).where(TransactionAnnotation.user_id == user_id),
+    )
+    await run_delete("tax_portal_data", delete(TaxPortalData).where(TaxPortalData.user_id == user_id))
     await run_delete("extraction_jobs", delete(ExtractionJob).where(ExtractionJob.user_id == user_id))
     await run_delete(
         "document_knowledge_chunks",
@@ -148,6 +168,7 @@ async def _delete_user_rows(db: AsyncSession, *, user_id: uuid.UUID) -> _ResetPl
     await run_delete("budgets", delete(Budget).where(Budget.user_id == user_id))
     await run_delete("monthly_summaries", delete(MonthlySummary).where(MonthlySummary.user_id == user_id))
     await run_delete("recurring_patterns", delete(RecurringPattern).where(RecurringPattern.user_id == user_id))
+    await run_delete("balance_snapshots", delete(BalanceSnapshot).where(BalanceSnapshot.user_id == user_id))
     await run_delete("raw_sms", delete(RawSms).where(RawSms.user_id == user_id))
 
     canonical_ids_subquery = select(CanonicalTransaction.id).where(
@@ -172,6 +193,7 @@ async def _delete_user_rows(db: AsyncSession, *, user_id: uuid.UUID) -> _ResetPl
         delete(CanonicalTransaction).where(CanonicalTransaction.user_id == user_id),
     )
     await run_delete("statements", delete(Statement).where(Statement.user_id == user_id))
+    await run_delete("accounts", delete(Account).where(Account.user_id == user_id))
     await run_delete("raw_pdfs", delete(RawPdf).where(RawPdf.user_id == user_id))
     await run_delete("document_artifacts", delete(DocumentArtifact).where(DocumentArtifact.user_id == user_id))
     await run_delete("categories", delete(Category).where(Category.user_id == user_id))

@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import type { ReconciliationResponse, TaxComplianceResponse, TaxActionItem } from '../api/client';
+import type {
+  ReconciliationResponse,
+  TaxActionItem,
+  TaxComplianceResponse,
+  TaxPortalData,
+  TaxVerificationCheck,
+  TaxVerificationResult,
+} from '../api/client';
 import { ShieldAlert, Link2, RefreshCw } from 'lucide-react';
 
 const formatAmount = (amount: number) =>
@@ -47,8 +54,11 @@ export default function TaxPage() {
   const [selectedFy, setSelectedFy] = useState(fyOptions[0]?.key ?? '');
   const [taxReport, setTaxReport] = useState<TaxComplianceResponse | null>(null);
   const [reconciliations, setReconciliations] = useState<ReconciliationResponse | null>(null);
+  const [verification, setVerification] = useState<TaxVerificationResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadDocType, setUploadDocType] = useState('form_16');
 
   const load = async (fyKey?: string) => {
     const selectedRange =
@@ -58,7 +68,7 @@ export default function TaxPage() {
     setLoading(true);
     setError('');
     try {
-      const [tax, rec] = await Promise.all([
+      const [tax, rec, verificationResult] = await Promise.all([
         api.getTaxCompliance({ from: selectedRange.from, to: selectedRange.to }),
         api.getTransferReconciliations({
           from: selectedRange.from,
@@ -66,14 +76,33 @@ export default function TaxPage() {
           max_gap_days: 5,
           limit: 500,
         }),
+        api.getTaxVerification(selectedRange.key).catch(() => null),
       ]);
       setTaxReport(tax);
       setReconciliations(rec);
+      setVerification(verificationResult);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load tax/audit insights';
       setError(message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePortalUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError('');
+    try {
+      await api.uploadTaxPortalDocument(file, uploadDocType, selectedFy);
+      const verificationResult = await api.getTaxVerification(selectedFy);
+      setVerification(verificationResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not upload tax portal document.');
+    } finally {
+      setUploading(false);
+      event.target.value = '';
     }
   };
 
@@ -212,6 +241,67 @@ export default function TaxPage() {
                   PPF contribution: {formatAmount(taxReport.totals.documented_ppf_contribution)}
                 </p>
               </div>
+            </div>
+          </section>
+
+          <section className="hc-grid-2">
+            <div className="hc-panel">
+              <div className="hc-panel-head">
+                <div>
+                  <h2 className="hc-panel-title">Portal Verification</h2>
+                  <p className="hc-panel-sub">Compare ledger tax signals with uploaded Form 16 / 26AS / AIS / TIS documents.</p>
+                </div>
+                <div className="flex gap-2">
+                  <select className="hc-select" value={uploadDocType} onChange={(e) => setUploadDocType(e.target.value)}>
+                    <option value="form_16">Form 16</option>
+                    <option value="form_26as">Form 26AS</option>
+                    <option value="ais">AIS</option>
+                    <option value="tis">TIS</option>
+                  </select>
+                  <label className="hc-btn hc-btn-solid" style={{ cursor: 'pointer' }}>
+                    {uploading ? 'Uploading...' : 'Upload'}
+                    <input type="file" hidden onChange={handlePortalUpload} />
+                  </label>
+                </div>
+              </div>
+              {verification ? (
+                <div className="space-y-2" style={{ marginTop: '0.8rem' }}>
+                  {verification.checks.map((check: TaxVerificationCheck) => (
+                    <div key={check.check} className="hc-panel" style={{ background: 'transparent' }}>
+                      <div className={`hc-badge ${check.status === 'match' ? 'hc-badge-ok' : check.status === 'mismatch' ? 'hc-badge-warn' : ''}`}>
+                        {check.status}
+                      </div>
+                      <p style={{ fontWeight: 600, marginTop: '0.35rem' }}>{check.check}</p>
+                      <p className="hc-panel-sub" style={{ marginTop: '0.2rem' }}>
+                        App {formatAmount(check.app_amount)} · Portal {formatAmount(check.portal_amount)} · Gap {formatAmount(Math.abs(check.gap))}
+                      </p>
+                      <p className="hc-panel-sub">{check.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="hc-panel-sub" style={{ marginTop: '0.8rem' }}>
+                  Upload portal documents to activate cross-verification.
+                </p>
+              )}
+            </div>
+
+            <div className="hc-panel">
+              <h2 className="hc-panel-title">Portal Documents</h2>
+              {verification && verification.portal_data.length > 0 ? (
+                <div className="space-y-2" style={{ marginTop: '0.8rem' }}>
+                  {verification.portal_data.map((item: TaxPortalData) => (
+                    <div key={item.id} className="hc-badge" style={{ justifyContent: 'space-between' }}>
+                      <span>{item.document_type.toUpperCase()} · {item.source_name ?? 'uploaded'}</span>
+                      <span>{item.financial_year ?? 'FY unknown'}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="hc-panel-sub" style={{ marginTop: '0.8rem' }}>
+                  No portal documents registered for this FY.
+                </p>
+              )}
             </div>
           </section>
 

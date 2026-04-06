@@ -12,6 +12,8 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -30,16 +32,23 @@ export default function LoginPage() {
         setMessage(result.message);
         setPreviewUrl(result.preview_url);
       } else if (isSetup) {
-        await api.setup({ email, display_name: displayName, password });
-        navigate('/');
+        await api.register({
+          email,
+          display_name: displayName,
+          password,
+          first_name: firstName || undefined,
+          last_name: lastName || undefined,
+        });
+        navigate('/onboarding');
       } else {
         await api.login(email, password);
-        navigate('/');
+        const status = await api.getOnboardingStatus();
+        navigate(status.completed ? '/' : '/onboarding');
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Something went wrong';
       setError(message);
-      if (message.includes('Setup')) setIsSetup(true);
+      if (message.includes('Setup already completed')) setIsSetup(false);
     } finally {
       setLoading(false);
     }
@@ -81,7 +90,7 @@ export default function LoginPage() {
                   {isForgotMode
                     ? 'Request a one-time password reset link.'
                     : isSetup
-                      ? 'Initialize your first local user.'
+                      ? 'Create a local user account.'
                       : 'Access your local finance workspace.'}
                 </p>
               </div>
@@ -100,19 +109,47 @@ export default function LoginPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4" style={{ marginTop: '0.9rem' }}>
               {isSetup && !isForgotMode && (
-                <div>
-                  <label htmlFor="display-name" className="hc-label">
-                    Display Name
-                  </label>
-                  <input
-                    id="display-name"
-                    type="text"
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    className="hc-input"
-                    required
-                  />
-                </div>
+                <>
+                  <div>
+                    <label htmlFor="display-name" className="hc-label">
+                      Display Name
+                    </label>
+                    <input
+                      id="display-name"
+                      type="text"
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      className="hc-input"
+                      required
+                    />
+                  </div>
+                  <div className="hc-grid-2">
+                    <div>
+                      <label htmlFor="first-name" className="hc-label">
+                        First Name
+                      </label>
+                      <input
+                        id="first-name"
+                        type="text"
+                        value={firstName}
+                        onChange={(e) => setFirstName(e.target.value)}
+                        className="hc-input"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="last-name" className="hc-label">
+                        Last Name
+                      </label>
+                      <input
+                        id="last-name"
+                        type="text"
+                        value={lastName}
+                        onChange={(e) => setLastName(e.target.value)}
+                        className="hc-input"
+                      />
+                    </div>
+                  </div>
+                </>
               )}
 
               <div>

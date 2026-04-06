@@ -1,22 +1,31 @@
+from datetime import datetime, timezone
 import os
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import literal, func, select
 
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
 from app.engines.insights.statement_integrity import build_credit_card_statement_integrity
+from app.engines.llm.correction_chat import run_transaction_correction_chat
 from app.engines.parser.statement_lifecycle import (
     delete_statement_and_memory,
     rereview_statement_with_llm,
 )
+from app.models.parsed_transaction import ParsedTransaction
 from app.models.raw_pdf import RawPdf
 from app.models.statement import Statement
+from app.models.transaction_annotation import TransactionAnnotation
+from app.models.transaction_source import TransactionSource
 from app.schemas.auth import MessageResponse
 from app.schemas.statement import (
+    StatementAnnotationRequest,
+    StatementAnnotationResponse,
     StatementIntegrityResponse,
     StatementListResponse,
+    StatementReviewResponse,
+    StatementReviewTransactionResponse,
     StatementResponse,
 )
 
@@ -60,6 +69,23 @@ def _to_statement_response(
         is_reprocess=is_reprocess,
         reprocess_count=safe_reprocess_count,
         created_at=statement.created_at,
+    )
+
+
+def _to_annotation_response(annotation: TransactionAnnotation) -> StatementAnnotationResponse:
+    return StatementAnnotationResponse(
+        id=str(annotation.id),
+        parsed_transaction_id=str(annotation.parsed_transaction_id) if annotation.parsed_transaction_id else None,
+        canonical_transaction_id=str(annotation.canonical_transaction_id) if annotation.canonical_transaction_id else None,
+        statement_id=str(annotation.statement_id),
+        annotation_type=annotation.annotation_type,
+        content=annotation.content,
+        llm_response=annotation.llm_response,
+        status=annotation.status,
+        actions_json=annotation.actions_json,
+        page_number=annotation.page_number,
+        created_at=annotation.created_at,
+        updated_at=annotation.updated_at,
     )
 
 
@@ -216,6 +242,210 @@ async def get_statement_integrity(statement_id: str, user: CurrentUser, db: DbSe
         statement=statement,
     )
     return StatementIntegrityResponse(**report)
+
+
+@router.get("/{statement_id}/review", response_model=StatementReviewResponse)
+async def get_statement_review(statement_id: str, user: CurrentUser, db: DbSession):
+    row = (
+        await db.execute(
+            select(
+                Statement,
+                RawPdf.id.label("pdf_id"),
+                RawPdf.original_filename.label("pdf_filename"),
+                RawPdf.source_type.label("source_type"),
+                literal(1).label("reprocess_count"),
+            )
+            .outerjoin(RawPdf, Statement.pdf_id == RawPdf.id)
+            .where(Statement.id == statement_id, Statement.user_id == user.id)
+            .limit(1)
+        )
+    ).one_or_none()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    statement, pdf_id, pdf_filename, source_type, reprocess_count = row
+
+    parsed_transactions = (
+        await db.execute(
+            select(ParsedTransaction)
+            .where(ParsedTransaction.statement_id == statement.id, ParsedTransaction.user_id == user.id)
+            .order_by(ParsedTransaction.transaction_date.asc(), ParsedTransaction.created_at.asc())
+        )
+    ).scalars().all()
+    annotations = (
+        await db.execute(
+            select(TransactionAnnotation)
+            .where(TransactionAnnotation.statement_id == statement.id, TransactionAnnotation.user_id == user.id)
+            .order_by(TransactionAnnotation.created_at.asc())
+        )
+    ).scalars().all()
+    source_ids = [txn.id for txn in parsed_transactions]
+    sources = []
+    if source_ids:
+        sources = (
+            await db.execute(
+                select(TransactionSource).where(TransactionSource.parsed_txn_id.in_(source_ids))
+            )
+        ).scalars().all()
+    canonical_by_parsed = {str(source.parsed_txn_id): str(source.canonical_txn_id) for source in sources}
+    annotations_by_parsed: dict[str, list[StatementAnnotationResponse]] = {}
+    annotation_responses = [_to_annotation_response(annotation) for annotation in annotations]
+    for annotation in annotation_responses:
+        if annotation.parsed_transaction_id:
+            annotations_by_parsed.setdefault(annotation.parsed_transaction_id, []).append(annotation)
+
+    transaction_items = [
+        StatementReviewTransactionResponse(
+            id=str(txn.id),
+            canonical_transaction_id=canonical_by_parsed.get(str(txn.id)),
+            transaction_date=txn.transaction_date,
+            posting_date=txn.posting_date,
+            description_raw=txn.description_raw,
+            amount=float(txn.amount),
+            direction=txn.direction,
+            confidence=float(txn.confidence or 0.0),
+            is_quarantined=bool(txn.is_quarantined),
+            extraction_method=txn.extraction_method,
+            line_number=txn.line_number,
+            page_number=None,
+            reviewer_user_id=str(txn.reviewer_user_id) if txn.reviewer_user_id else None,
+            reviewed_at=txn.reviewed_at,
+            annotations=annotations_by_parsed.get(str(txn.id), []),
+        )
+        for txn in parsed_transactions
+    ]
+
+    return StatementReviewResponse(
+        statement=_to_statement_response(
+            statement,
+            str(pdf_id) if pdf_id else None,
+            pdf_filename,
+            source_type,
+            reprocess_count,
+        ),
+        transactions=transaction_items,
+        annotations=annotation_responses,
+    )
+
+
+@router.post(
+    "/{statement_id}/transactions/{txn_id}/annotate",
+    response_model=StatementAnnotationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def annotate_statement_transaction(
+    statement_id: str,
+    txn_id: str,
+    request: StatementAnnotationRequest,
+    user: CurrentUser,
+    db: DbSession,
+):
+    statement = (
+        await db.execute(
+            select(Statement).where(Statement.id == statement_id, Statement.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if statement is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    parsed = (
+        await db.execute(
+            select(ParsedTransaction).where(
+                ParsedTransaction.id == txn_id,
+                ParsedTransaction.statement_id == statement.id,
+                ParsedTransaction.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if parsed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parsed transaction not found.")
+
+    llm_response = None
+    actions_json = None
+    annotation_status = "acknowledged" if request.annotation_type == "comment" else "pending"
+    if request.annotation_type == "correction_request":
+        result = await run_transaction_correction_chat(
+            db=db,
+            user_id=user.id,
+            message=(
+                f"Focus on statement transaction {txn_id}: {parsed.description_raw} "
+                f"{float(parsed.amount):.2f} {parsed.direction}. {request.content}"
+            ),
+            apply_changes=request.apply_changes,
+            max_candidates=250,
+        )
+        llm_response = result.reply
+        actions_json = {
+            "warnings": result.warnings,
+            "actions": result.actions,
+            "proposed_count": result.proposed_count,
+            "applied_count": result.applied_count,
+        }
+        annotation_status = "applied" if request.apply_changes and result.applied_count > 0 else "pending"
+
+    annotation = TransactionAnnotation(
+        user_id=user.id,
+        parsed_transaction_id=parsed.id,
+        statement_id=statement.id,
+        annotation_type=request.annotation_type,
+        content=request.content.strip(),
+        llm_response=llm_response,
+        status=annotation_status,
+        actions_json=actions_json,
+        page_number=request.page_number,
+    )
+    db.add(annotation)
+    await db.flush()
+    return _to_annotation_response(annotation)
+
+
+@router.post("/{statement_id}/transactions/{txn_id}/verify", response_model=MessageResponse)
+async def verify_statement_transaction(statement_id: str, txn_id: str, user: CurrentUser, db: DbSession):
+    parsed = (
+        await db.execute(
+            select(ParsedTransaction)
+            .join(Statement, ParsedTransaction.statement_id == Statement.id)
+            .where(
+                ParsedTransaction.id == txn_id,
+                Statement.id == statement_id,
+                Statement.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if parsed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    parsed.reviewer_user_id = user.id
+    parsed.reviewed_at = datetime.now(timezone.utc)
+    parsed.is_quarantined = False
+    await db.flush()
+    return MessageResponse(message="Transaction verified.")
+
+
+@router.post("/{statement_id}/bulk-verify", response_model=MessageResponse)
+async def bulk_verify_statement(statement_id: str, user: CurrentUser, db: DbSession):
+    statement = (
+        await db.execute(
+            select(Statement).where(Statement.id == statement_id, Statement.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if statement is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    parsed_transactions = (
+        await db.execute(
+            select(ParsedTransaction).where(
+                ParsedTransaction.statement_id == statement.id,
+                ParsedTransaction.user_id == user.id,
+            )
+        )
+    ).scalars().all()
+    now = datetime.now(timezone.utc)
+    for parsed in parsed_transactions:
+        parsed.reviewer_user_id = user.id
+        parsed.reviewed_at = now
+        parsed.is_quarantined = False
+    statement.quarantined_row_count = 0
+    if statement.parse_status == "review_required":
+        statement.parse_status = "parsed"
+    await db.flush()
+    return MessageResponse(message=f"Verified {len(parsed_transactions)} statement transactions.")
 
 
 @router.post("/{statement_id}/re-review", response_model=StatementResponse)

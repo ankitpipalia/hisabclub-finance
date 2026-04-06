@@ -5,13 +5,15 @@ import {
   Text,
   StyleSheet,
   RefreshControl,
+  ScrollView,
+  Alert,
 } from 'react-native';
-import { Searchbar, Chip, ActivityIndicator } from 'react-native-paper';
+import { Searchbar, Chip, ActivityIndicator, Button, TextInput } from 'react-native-paper';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as api from '../api/client';
-import type { Transaction } from '../api/types';
+import type { Category, Transaction } from '../api/types';
 import type { RootStackParamList } from '../navigation/types';
 import TransactionRow from '../components/TransactionRow';
 import EmptyState from '../components/EmptyState';
@@ -25,6 +27,22 @@ type FilterType = 'all' | 'debit' | 'credit';
 type TimelinePreset = 'all' | '30d' | '90d' | 'fy';
 
 const PER_PAGE = 20;
+
+type BulkEditorState = {
+  category_id: string;
+  transaction_nature: string;
+  notes: string;
+  tagsText: string;
+  is_excluded: boolean;
+};
+
+const emptyBulkEditor = (): BulkEditorState => ({
+  category_id: '',
+  transaction_nature: '',
+  notes: '',
+  tagsText: '',
+  is_excluded: false,
+});
 
 function toDateInput(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -64,6 +82,12 @@ export default function TransactionsScreen() {
   const [allItems, setAllItems] = useState<Transaction[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [autoCategorizeChecked, setAutoCategorizeChecked] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkEditor, setBulkEditor] = useState<BulkEditorState>(emptyBulkEditor());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkInfo, setBulkInfo] = useState('');
+  const [categories, setCategories] = useState<Category[]>([]);
 
   const direction = filter === 'all' ? undefined : filter;
   const timelineRange = useMemo(() => getTimelineRange(timeline), [timeline]);
@@ -105,6 +129,21 @@ export default function TransactionsScreen() {
     })();
   }, [allItems, autoCategorizeChecked, refetch]);
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const result = await api.getCategories();
+        if (active) setCategories(result);
+      } catch {
+        // best effort
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const handleSearch = useCallback((query: string) => {
     setSearch(query);
     setPage(1);
@@ -139,12 +178,66 @@ export default function TransactionsScreen() {
     refetch();
   }, [refetch]);
 
+  const clearSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds([]);
+    setBulkEditor(emptyBulkEditor());
+    setBulkInfo('');
+  }, []);
+
   const handleTransactionPress = useCallback(
     (transaction: Transaction) => {
+      if (selectionMode) {
+        setSelectedIds((current) =>
+          current.includes(transaction.id)
+            ? current.filter((id) => id !== transaction.id)
+            : [...current, transaction.id],
+        );
+        return;
+      }
       navigation.navigate('TransactionDetail', { id: transaction.id });
     },
-    [navigation],
+    [navigation, selectionMode],
   );
+
+  const handleTransactionLongPress = useCallback((transaction: Transaction) => {
+    setSelectionMode(true);
+    setSelectedIds((current) => (current.includes(transaction.id) ? current : [...current, transaction.id]));
+  }, []);
+
+  const handleBulkApply = useCallback(async () => {
+    if (!selectedIds.length) return;
+    const payload: {
+      transaction_ids: string[];
+      category_id?: string | null;
+      transaction_nature?: string | null;
+      notes?: string | null;
+      tags?: string[] | null;
+      is_excluded?: boolean;
+    } = { transaction_ids: selectedIds };
+    if (bulkEditor.category_id) payload.category_id = bulkEditor.category_id;
+    if (bulkEditor.transaction_nature) payload.transaction_nature = bulkEditor.transaction_nature;
+    if (bulkEditor.notes.trim()) payload.notes = bulkEditor.notes.trim();
+    if (bulkEditor.tagsText.trim()) {
+      payload.tags = bulkEditor.tagsText
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    payload.is_excluded = bulkEditor.is_excluded;
+
+    setBulkBusy(true);
+    try {
+      const result = await api.bulkUpdateTransactions(payload);
+      Alert.alert('Bulk update complete', `Updated ${result.updated_count} transaction(s).`);
+      clearSelection();
+      handleRefresh();
+    } catch (err: any) {
+      setBulkInfo(err.message || 'Bulk update failed.');
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkEditor, clearSelection, handleRefresh, selectedIds]);
 
   const renderFooter = () => {
     if (!isLoading || page === 1) return null;
@@ -168,6 +261,27 @@ export default function TransactionsScreen() {
 
       <FadeInView delay={80}>
         <View style={styles.searchSection}>
+          <View style={styles.selectionHeader}>
+            <Text style={styles.selectionTitle}>
+              {selectionMode ? `${selectedIds.length} selected` : 'Tap to open. Long-press to select.'}
+            </Text>
+            <View style={styles.selectionActions}>
+              {!selectionMode ? (
+                <Button mode="outlined" compact onPress={() => setSelectionMode(true)}>
+                  Select
+                </Button>
+              ) : (
+                <>
+                  <Button mode="outlined" compact onPress={() => setSelectedIds(allItems.map((item) => item.id))}>
+                    Select page
+                  </Button>
+                  <Button mode="text" compact onPress={clearSelection}>
+                    Cancel
+                  </Button>
+                </>
+              )}
+            </View>
+          </View>
           <Searchbar
             placeholder="Search transactions..."
             value={search}
@@ -235,6 +349,106 @@ export default function TransactionsScreen() {
               All
             </Chip>
           </View>
+
+          {selectionMode && selectedIds.length > 0 ? (
+            <View style={styles.bulkPanel}>
+              <Text style={styles.bulkTitle}>Bulk Update</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+                <View style={styles.categoryChipRow}>
+                  <Chip
+                    selected={bulkEditor.category_id === ''}
+                    onPress={() => setBulkEditor((current) => ({ ...current, category_id: '' }))}
+                    style={styles.chip}
+                  >
+                    Keep category
+                  </Chip>
+                  {categories.slice(0, 24).map((category) => (
+                    <Chip
+                      key={category.id}
+                      selected={bulkEditor.category_id === category.id}
+                      onPress={() => setBulkEditor((current) => ({ ...current, category_id: category.id }))}
+                      style={styles.chip}
+                    >
+                      {category.name}
+                    </Chip>
+                  ))}
+                </View>
+              </ScrollView>
+
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+                <View style={styles.categoryChipRow}>
+                  <Chip
+                    selected={bulkEditor.transaction_nature === ''}
+                    onPress={() => setBulkEditor((current) => ({ ...current, transaction_nature: '' }))}
+                    style={styles.chip}
+                  >
+                    Keep nature
+                  </Chip>
+                  {['expense', 'income', 'transfer_internal', 'refund', 'investment', 'tax'].map((nature) => (
+                    <Chip
+                      key={nature}
+                      selected={bulkEditor.transaction_nature === nature}
+                      onPress={() => setBulkEditor((current) => ({ ...current, transaction_nature: nature }))}
+                      style={styles.chip}
+                    >
+                      {nature}
+                    </Chip>
+                  ))}
+                </View>
+              </ScrollView>
+
+              <TextInput
+                label="Notes"
+                value={bulkEditor.notes}
+                onChangeText={(notes) => setBulkEditor((current) => ({ ...current, notes }))}
+                mode="outlined"
+                style={styles.bulkInput}
+              />
+              <TextInput
+                label="Tags"
+                value={bulkEditor.tagsText}
+                onChangeText={(tagsText) => setBulkEditor((current) => ({ ...current, tagsText }))}
+                mode="outlined"
+                style={styles.bulkInput}
+                placeholder="comma,separated,tags"
+              />
+              <View style={styles.selectionActions}>
+                <Chip
+                  selected={!bulkEditor.is_excluded}
+                  onPress={() => setBulkEditor((current) => ({ ...current, is_excluded: false }))}
+                  style={styles.chip}
+                >
+                  Keep included
+                </Chip>
+                <Chip
+                  selected={bulkEditor.is_excluded}
+                  onPress={() => setBulkEditor((current) => ({ ...current, is_excluded: true }))}
+                  style={styles.chip}
+                >
+                  Exclude selected
+                </Chip>
+              </View>
+              {bulkInfo ? <Text style={styles.bulkInfo}>{bulkInfo}</Text> : null}
+              <View style={styles.selectionActions}>
+                <Button
+                  mode="contained"
+                  onPress={handleBulkApply}
+                  loading={bulkBusy}
+                  disabled={bulkBusy || !selectedIds.length}
+                >
+                  Apply to {selectedIds.length}
+                </Button>
+                {selectedIds.length === 1 ? (
+                  <Button
+                    mode="outlined"
+                    onPress={() => navigation.navigate('TransactionDetail', { id: selectedIds[0] })}
+                  >
+                    Split / Detail
+                  </Button>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
         </View>
       </FadeInView>
 
@@ -255,6 +469,9 @@ export default function TransactionsScreen() {
             <TransactionRow
               transaction={item}
               onPress={() => handleTransactionPress(item)}
+              onLongPress={() => handleTransactionLongPress(item)}
+              selectionMode={selectionMode}
+              selected={selectedIds.includes(item.id)}
             />
           )}
           onEndReached={handleLoadMore}
@@ -284,6 +501,51 @@ const createStyles = (COLORS: AppThemeColors) => StyleSheet.create({
     borderBottomColor: COLORS.border,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
+  },
+  selectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  selectionTitle: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    flex: 1,
+    marginRight: 12,
+  },
+  selectionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  bulkPanel: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    gap: 10,
+  },
+  bulkTitle: {
+    color: COLORS.text,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  categoryScroll: {
+    marginTop: 2,
+  },
+  categoryChipRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingRight: 16,
+  },
+  bulkInput: {
+    backgroundColor: COLORS.surface,
+  },
+  bulkInfo: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
   },
   hero: {
     margin: 16,

@@ -13,6 +13,7 @@
   --hc-accent-fg: #ffffff;
   --hc-ring: #ff3d00;
   --hc-ok: #1f7a42;
+  --hc-info: #2563eb;
   --hc-warn: #9b6500;
   --hc-danger: #b91c1c;
   --hc-shadow: none;
@@ -40,6 +41,7 @@ html.theme-dark {
   --hc-accent: #ff3d00;
   --hc-accent-fg: #0a0a0a;
   --hc-ok: #4ade80;
+  --hc-info: #60a5fa;
   --hc-warn: #fbbf24;
   --hc-danger: #f87171;
 }
@@ -525,6 +527,11 @@ textarea {
 .hc-badge-warn {
   border-color: color-mix(in srgb, var(--hc-warn) 50%, var(--hc-border));
   color: var(--hc-warn);
+}
+
+.hc-badge-info {
+  border-color: color-mix(in srgb, var(--hc-info) 50%, var(--hc-border));
+  color: var(--hc-info);
 }
 
 .hc-badge-danger {

@@ -126,9 +126,34 @@ class ApiClient {
   }
 
   // Auth
-  async setup(data: { email: string; display_name: string; password: string }) {
+  async setup(data: {
+    email: string;
+    display_name: string;
+    password: string;
+    first_name?: string;
+    last_name?: string;
+    date_of_birth?: string;
+    pan_number?: string;
+  }) {
     const result = await this.request<{ access_token: string; refresh_token: string }>(
       '/auth/setup',
+      { method: 'POST', body: JSON.stringify(data) }
+    );
+    this.setToken(result.access_token);
+    return result;
+  }
+
+  async register(data: {
+    email: string;
+    display_name: string;
+    password: string;
+    first_name?: string;
+    last_name?: string;
+    date_of_birth?: string;
+    pan_number?: string;
+  }) {
+    const result = await this.request<{ access_token: string; refresh_token: string }>(
+      '/auth/register',
       { method: 'POST', body: JSON.stringify(data) }
     );
     this.setToken(result.access_token);
@@ -179,7 +204,36 @@ class ApiClient {
   }
 
   async getMe() {
-    return this.request<{ id: string; email: string; display_name: string }>('/auth/me');
+    return this.request<UserProfile>('/auth/me');
+  }
+
+  async getOnboardingStatus() {
+    return this.request<OnboardingStatus>('/auth/onboarding/status');
+  }
+
+  async updateOnboardingProfile(data: {
+    first_name?: string;
+    last_name?: string;
+    date_of_birth?: string;
+    pan_number?: string;
+  }) {
+    return this.request<UserProfile>('/auth/onboarding/profile', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async saveOnboardingBanks(data: { banks: OnboardingBank[] }) {
+    return this.request<MessageResponse>('/auth/onboarding/banks', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async completeOnboarding() {
+    return this.request<OnboardingStatus>('/auth/onboarding/complete', {
+      method: 'POST',
+    });
   }
 
   // Upload
@@ -255,6 +309,38 @@ class ApiClient {
 
   async getStatementPdf(statementId: string) {
     return this.requestBlob(`/statements/${statementId}/pdf`);
+  }
+
+  async getStatementReview(statementId: string) {
+    return this.request<StatementReview>(`/statements/${statementId}/review`);
+  }
+
+  async annotateStatementTransaction(
+    statementId: string,
+    txnId: string,
+    payload: {
+      annotation_type: string;
+      content: string;
+      page_number?: number;
+      apply_changes?: boolean;
+    },
+  ) {
+    return this.request<StatementAnnotation>(`/statements/${statementId}/transactions/${txnId}/annotate`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async verifyStatementTransaction(statementId: string, txnId: string) {
+    return this.request<MessageResponse>(`/statements/${statementId}/transactions/${txnId}/verify`, {
+      method: 'POST',
+    });
+  }
+
+  async bulkVerifyStatement(statementId: string) {
+    return this.request<MessageResponse>(`/statements/${statementId}/bulk-verify`, {
+      method: 'POST',
+    });
   }
 
   async rereviewStatement(statementId: string) {
@@ -336,6 +422,46 @@ class ApiClient {
     });
   }
 
+  async getTransactionDetail(txnId: string) {
+    return this.request<TransactionDetail>(`/transactions/${txnId}/detail`);
+  }
+
+  async bulkUpdateTransactions(payload: {
+    transaction_ids: string[];
+    category_id?: string | null;
+    merchant_id?: string | null;
+    transaction_nature?: string | null;
+    notes?: string | null;
+    tags?: string[] | null;
+    is_excluded?: boolean | null;
+  }) {
+    return this.request<TransactionBulkUpdateResponse>('/transactions/bulk-update', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async splitTransaction(
+    txnId: string,
+    payload: {
+      parts: Array<{
+        amount: number;
+        merchant_raw?: string | null;
+        category_id?: string | null;
+        merchant_id?: string | null;
+        transaction_nature?: string | null;
+        notes?: string | null;
+        tags?: string[] | null;
+      }>;
+      exclude_original?: boolean;
+    },
+  ) {
+    return this.request<TransactionSplitResponse>(`/transactions/${txnId}/split`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
   // Categories
   async getCategories() {
     return this.request<Category[]>('/categories');
@@ -364,6 +490,38 @@ class ApiClient {
 
   async getRecurring() {
     return this.request<RecurringPattern[]>('/insights/recurring');
+  }
+
+  async getNetWorthOverview(months: number = 12) {
+    return this.request<NetWorthOverview>(`/net-worth/overview?months=${months}`);
+  }
+
+  async createManualNetWorthSnapshot(payload: {
+    label: string;
+    entry_kind: 'asset' | 'liability';
+    asset_type: string;
+    balance: number;
+    as_of_date: string;
+    institution_name?: string | null;
+    account_masked?: string | null;
+    currency?: string;
+    metadata_json?: Record<string, unknown> | null;
+    position_key?: string | null;
+  }) {
+    return this.request<BalanceSnapshot>('/net-worth/manual-snapshots', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteManualNetWorthSnapshot(snapshotId: string) {
+    return this.request<BalanceSnapshot>(`/net-worth/manual-snapshots/${snapshotId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getSubscriptions() {
+    return this.request<SubscriptionOverview>('/subscriptions');
   }
 
   async getTransferReconciliations(params?: {
@@ -396,6 +554,119 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+  }
+
+  async getAccounts() {
+    return this.request<Account[]>('/accounts');
+  }
+
+  async getAccountsTree() {
+    return this.request<AccountInstitutionGroup[]>('/accounts/tree');
+  }
+
+  async getInstitutions() {
+    return this.request<Institution[]>('/accounts/institutions');
+  }
+
+  async createAccount(payload: {
+    institution_name: string;
+    account_type: string;
+    account_number_masked?: string;
+    nickname?: string;
+    metadata_json?: Record<string, unknown>;
+  }) {
+    return this.request<Account>('/accounts', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateAccount(accountId: string, payload: {
+    nickname?: string | null;
+    status?: string;
+    metadata_json?: Record<string, unknown>;
+  }) {
+    return this.request<Account>(`/accounts/${accountId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async closeAccount(accountId: string) {
+    return this.request<Account>(`/accounts/${accountId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getAccountStatements(accountId: string) {
+    return this.request<AccountStatementsSummary>(`/accounts/${accountId}/statements`);
+  }
+
+  async getConversations() {
+    return this.request<ConversationThread[]>('/conversations');
+  }
+
+  async createConversation(payload: {
+    title: string;
+    statement_id?: string | null;
+    initial_message?: string;
+  }) {
+    return this.request<ConversationThread>('/conversations', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getConversationMessages(threadId: string) {
+    return this.request<ConversationMessage[]>(`/conversations/${threadId}/messages`);
+  }
+
+  async replyConversation(threadId: string, payload: { message: string; apply_changes?: boolean }) {
+    return this.request<ConversationReplyResult>(`/conversations/${threadId}/reply`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getConversationPendingCount() {
+    return this.request<{ pending_count: number }>('/conversations/pending-count');
+  }
+
+  async resolveConversation(threadId: string) {
+    return this.request<{ resolved: boolean; thread: ConversationThread }>(`/conversations/${threadId}/resolve`, {
+      method: 'POST',
+    });
+  }
+
+  async uploadTaxPortalDocument(
+    file: File,
+    documentType: string,
+    financialYear?: string,
+    password?: string,
+    forceReprocess: boolean = false,
+  ) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('document_type', documentType);
+    if (financialYear) formData.append('financial_year', financialYear);
+    if (password) formData.append('password', password);
+    if (forceReprocess) formData.append('force_reprocess', 'true');
+    return this.request<TaxPortalUploadResult>('/tax/upload-portal-document', {
+      method: 'POST',
+      body: formData,
+    });
+  }
+
+  async getTaxVerification(financialYear: string) {
+    return this.request<TaxVerificationResult>(`/tax/verification/${encodeURIComponent(financialYear)}`);
+  }
+
+  async getTaxPortalData(financialYear: string) {
+    return this.request<TaxPortalData[]>(`/tax/portal-data/${encodeURIComponent(financialYear)}`);
+  }
+
+  async getTaxDiscrepancies(financialYear: string) {
+    return this.request<TaxVerificationCheck[]>(`/tax/discrepancies/${encodeURIComponent(financialYear)}`);
   }
 
   // ─── Budgets ───
@@ -540,6 +811,121 @@ export interface Statement {
   created_at: string;
 }
 
+export interface StatementAnnotation {
+  id: string;
+  parsed_transaction_id: string | null;
+  canonical_transaction_id: string | null;
+  statement_id: string;
+  annotation_type: string;
+  content: string;
+  llm_response: string | null;
+  status: string;
+  actions_json: Record<string, unknown> | null;
+  page_number: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StatementReviewTransaction {
+  id: string;
+  canonical_transaction_id: string | null;
+  transaction_date: string;
+  posting_date: string | null;
+  description_raw: string;
+  amount: number;
+  direction: string;
+  confidence: number;
+  is_quarantined: boolean;
+  extraction_method: string;
+  line_number: number | null;
+  page_number: number | null;
+  reviewer_user_id: string | null;
+  reviewed_at: string | null;
+  annotations: StatementAnnotation[];
+}
+
+export interface StatementReview {
+  statement: Statement;
+  transactions: StatementReviewTransaction[];
+  annotations: StatementAnnotation[];
+}
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  display_name: string;
+  first_name: string | null;
+  last_name: string | null;
+  onboarding_completed: boolean;
+  onboarding_step: number;
+}
+
+export interface OnboardingStatus {
+  completed: boolean;
+  current_step: number;
+  profile_complete: boolean;
+  accounts_count: number;
+}
+
+export interface OnboardingBankAccount {
+  account_type: string;
+  account_number_masked?: string | null;
+  nickname?: string | null;
+}
+
+export interface OnboardingBank {
+  institution_name: string;
+  accounts: OnboardingBankAccount[];
+}
+
+export interface Institution {
+  id: string;
+  name: string;
+  short_name: string;
+  logo_key: string | null;
+  institution_type: string;
+  supported_formats: Record<string, boolean>;
+  is_system: boolean;
+}
+
+export interface Account {
+  id: string;
+  institution_id: string | null;
+  institution_name: string;
+  account_type: string;
+  account_number_masked: string | null;
+  nickname: string | null;
+  status: string;
+  metadata_json: Record<string, unknown> | null;
+  last_statement_date: string | null;
+  opening_date: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountCoverageRange {
+  start: string | null;
+  end: string | null;
+}
+
+export interface AccountTreeItem extends Account {
+  statement_count: number;
+  total_transactions: number;
+  latest_balance: number | null;
+  period_coverage: AccountCoverageRange[];
+}
+
+export interface AccountInstitutionGroup {
+  institution: Institution | null;
+  institution_name: string;
+  accounts: AccountTreeItem[];
+}
+
+export interface AccountStatementsSummary {
+  account: Account;
+  statements: Statement[];
+}
+
 export interface ForgotPasswordResponse {
   message: string;
   delivery: string;
@@ -596,11 +982,14 @@ export interface StatementIntegrityResponse {
 export interface Transaction {
   id: string;
   transaction_date: string;
+  posting_date?: string | null;
   amount: number;
   direction: string;
   transaction_nature: string;
+  currency?: string;
   merchant_raw: string;
   merchant_normalized: string | null;
+  category_id?: string | null;
   category_name: string | null;
   bank_name: string | null;
   bank_label: string | null;
@@ -608,8 +997,10 @@ export interface Transaction {
   account_masked: string | null;
   is_recurring: boolean;
   is_anomalous: boolean;
+  is_excluded?: boolean;
   notes: string | null;
   tags: string[] | null;
+  created_at?: string;
 }
 
 export interface TransactionListResponse {
@@ -617,6 +1008,44 @@ export interface TransactionListResponse {
   total: number;
   page: number;
   per_page: number;
+}
+
+export interface TransactionBulkUpdateResponse {
+  updated_count: number;
+  items: Transaction[];
+}
+
+export interface TransactionSplitResponse {
+  original_transaction: Transaction;
+  created_transactions: Transaction[];
+}
+
+export interface TransactionSource {
+  parsed_txn_id: string;
+  statement_id: string | null;
+  source_type: string;
+  description_raw: string;
+  confidence: number;
+  extraction_method: string;
+  match_method: string;
+  is_primary: boolean;
+}
+
+export interface TransactionOverride {
+  id: string;
+  field_name: string;
+  old_value: string | null;
+  new_value: string;
+  override_reason: string | null;
+  created_at: string;
+}
+
+export interface TransactionDetail {
+  transaction: Transaction;
+  sources: TransactionSource[];
+  overrides: TransactionOverride[];
+  split_parent: Transaction | null;
+  split_children: Transaction[];
 }
 
 export interface ReclassifyTransferResponse {
@@ -964,6 +1393,154 @@ export interface AssistantChatResponse {
   skipped_count: number;
   warnings: string[];
   actions: AssistantActionResult[];
+}
+
+export interface ConversationThread {
+  id: string;
+  statement_id: string | null;
+  title: string;
+  status: string;
+  summary: string | null;
+  metadata_json: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  pending_question_count: number;
+}
+
+export interface ConversationMessage {
+  id: string;
+  thread_id: string;
+  role: string;
+  content: string;
+  message_index: number;
+  metadata_json: Record<string, unknown> | null;
+  is_applied: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationReplyResult {
+  thread: ConversationThread;
+  message: ConversationMessage;
+  assistant_message: ConversationMessage;
+  warnings: string[];
+  actions: AssistantActionResult[];
+  proposed_count: number;
+  applied_count: number;
+  skipped_count: number;
+}
+
+export interface TaxPortalData {
+  id: string;
+  document_artifact_id: string | null;
+  document_type: string;
+  assessment_year: string | null;
+  financial_year: string | null;
+  source_name: string | null;
+  pan_masked: string | null;
+  document_date: string | null;
+  extracted_json: Record<string, unknown>;
+  verification_json: Record<string, unknown> | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaxVerificationCheck {
+  check: string;
+  status: string;
+  app_amount: number;
+  portal_amount: number;
+  gap: number;
+  detail: string;
+}
+
+export interface TaxVerificationResult {
+  financial_year: string;
+  tax_report: TaxComplianceResponse;
+  portal_data: TaxPortalData[];
+  checks: TaxVerificationCheck[];
+  discrepancies: TaxVerificationCheck[];
+}
+
+export interface TaxPortalUploadResult {
+  artifact_id: string;
+  portal_data_id: string;
+  document_type: string;
+  financial_year: string | null;
+  message: string;
+}
+
+export interface BalanceSnapshot {
+  id: string;
+  account_id: string | null;
+  statement_id: string | null;
+  position_key: string;
+  label: string;
+  source_kind: string;
+  entry_kind: string;
+  asset_type: string;
+  institution_name: string | null;
+  account_masked: string | null;
+  currency: string;
+  balance: number;
+  as_of_date: string;
+  is_active: boolean;
+  metadata_json: Record<string, unknown> | null;
+}
+
+export interface NetWorthHistoryPoint {
+  as_of_date: string;
+  assets: number;
+  liabilities: number;
+  net_worth: number;
+}
+
+export interface NetWorthTotals {
+  assets: number;
+  liabilities: number;
+  net_worth: number;
+  positions_count: number;
+  manual_positions_count: number;
+  latest_snapshot_date: string | null;
+}
+
+export interface NetWorthOverview {
+  totals: NetWorthTotals;
+  history: NetWorthHistoryPoint[];
+  positions: BalanceSnapshot[];
+  manual_snapshots: BalanceSnapshot[];
+}
+
+export interface SubscriptionItem {
+  id: string;
+  merchant_name: string;
+  description_pattern: string;
+  category_name: string | null;
+  typical_amount: number;
+  amount_variance: number;
+  frequency: string;
+  expected_day: number;
+  last_seen_date: string;
+  next_expected: string;
+  is_active: boolean;
+  annual_cost_estimate: number;
+  monthly_cost_equivalent: number;
+  status: string;
+  days_until_due: number;
+}
+
+export interface SubscriptionSummary {
+  active_count: number;
+  total_monthly_estimate: number;
+  total_annual_estimate: number;
+  overdue_count: number;
+}
+
+export interface SubscriptionOverview {
+  summary: SubscriptionSummary;
+  items: SubscriptionItem[];
 }
 
 export const api = new ApiClient();

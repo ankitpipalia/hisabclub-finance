@@ -724,7 +724,9 @@ async def parse_statement(
             superseded_statement = existing_active
 
     # Step 5-7: Persist atomically so partial promotion cannot leak.
+    from app.engines.account.service import ensure_account_record
     from app.engines.insights.bill_tracker import create_bill_from_statement
+    from app.engines.insights.net_worth import upsert_statement_balance_snapshot
     from app.engines.ledger.merger import promote_to_canonical
 
     async with db.begin_nested():
@@ -763,9 +765,26 @@ async def parse_statement(
         if validated.details:
             parse_errors_payload["validation"] = validated.details
 
+        account = await ensure_account_record(
+            db,
+            user_id=user_id,
+            bank_name=extracted.bank_name,
+            account_type=extracted.account_type,
+            account_number_masked=extracted.account_number_masked,
+            statement_period_start=extracted.statement_period_start,
+            statement_period_end=extracted.statement_period_end,
+            metadata_json={
+                "credit_limit": extracted.credit_limit,
+                "available_limit": extracted.available_limit,
+            }
+            if extracted.account_type == "credit_card"
+            else None,
+        )
+
         statement = Statement(
             user_id=user_id,
             pdf_id=pdf_id,
+            account_id=account.id if account is not None else None,
             bank_name=extracted.bank_name,
             account_type=extracted.account_type,
             account_number_masked=extracted.account_number_masked,
@@ -797,6 +816,11 @@ async def parse_statement(
         )
         db.add(statement)
         await db.flush()
+        await upsert_statement_balance_snapshot(
+            db,
+            user_id=user_id,
+            statement=statement,
+        )
 
         promoted_count = 0
         for txn in extracted.transactions:

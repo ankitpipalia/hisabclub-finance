@@ -280,12 +280,86 @@ export default function DashboardPage() {
             </section>
           )}
 
+          {statements.length > 0 && (
+            <section className="hc-panel">
+              <div className="hc-panel-head">
+                <h2 className="hc-panel-title">Recent Statements</h2>
+                <div className="hc-inline-actions">
+                  <button onClick={() => navigate('/accounts')} className="hc-btn hc-btn-outline">
+                    Accounts
+                  </button>
+                  <button onClick={() => navigate('/statements')} className="hc-btn hc-btn-primary">
+                    View all
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-0">
+                {statements.slice(0, 5).map((statement, idx) => (
+                  <div
+                    key={statement.id}
+                    style={{
+                      padding: '0.75rem 0',
+                      borderTop: idx ? '1px solid var(--hc-border)' : 'none',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: '0.8rem',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div>
+                      <p style={{ fontWeight: 600 }}>
+                        {statement.bank_name} · {statement.account_type}
+                      </p>
+                      <p className="hc-panel-sub">
+                        {statement.statement_period_start
+                          ? new Date(statement.statement_period_start).toLocaleDateString('en-IN', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                            })
+                          : 'Unknown start'}
+                        {' → '}
+                        {statement.statement_period_end
+                          ? new Date(statement.statement_period_end).toLocaleDateString('en-IN', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                            })
+                          : 'Unknown end'}
+                        {statement.account_number_masked ? ` · ${statement.account_number_masked}` : ''}
+                      </p>
+                    </div>
+                    <div className="hc-inline-actions">
+                      <span className="hc-badge">{statement.parse_status}</span>
+                      <button
+                        onClick={() =>
+                          navigate(
+                            statement.parse_status === 'parsed' || statement.parse_status === 'review_required'
+                              ? `/statements/${statement.id}/review`
+                              : '/statements'
+                          )
+                        }
+                        className="hc-btn hc-btn-outline"
+                      >
+                        {statement.parse_status === 'parsed' || statement.parse_status === 'review_required'
+                          ? 'Review'
+                          : 'Open'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           <section className="hc-panel">
             <div className="hc-panel-head">
               <h2 className="hc-panel-title">Recent Transactions</h2>
-              <button onClick={() => navigate('/transactions')} className="hc-btn hc-btn-primary">
-                View all
-              </button>
+              <div className="hc-inline-actions">
+                <button onClick={() => navigate('/transactions')} className="hc-btn hc-btn-primary">
+                  View all
+                </button>
+              </div>
             </div>
             <div className="space-y-0">
               {recentTxns.map((txn, idx) => (
@@ -300,7 +374,20 @@ export default function DashboardPage() {
                   }}
                 >
                   <div>
-                    <p style={{ fontWeight: 600 }}>{txn.merchant_normalized || txn.merchant_raw}</p>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/transactions/${txn.id}`)}
+                      style={{
+                        fontWeight: 600,
+                        background: 'transparent',
+                        border: 'none',
+                        padding: 0,
+                        color: 'inherit',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {txn.merchant_normalized || txn.merchant_raw}
+                    </button>
                     <p className="hc-panel-sub">
                       {new Date(txn.transaction_date).toLocaleDateString('en-IN', {
                         day: '2-digit',

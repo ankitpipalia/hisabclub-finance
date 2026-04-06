@@ -17,7 +17,7 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload ba
 
 ## Current Supported Runtime
 
-This is the verified development/runtime topology as of 2026-04-06:
+This is the verified development/runtime topology as of 2026-04-07:
 
 - **Backend** runs on the host at `http://localhost:8356`
 - **Web frontend** is built to `frontend/dist` and served by the backend at `/`
@@ -52,7 +52,7 @@ The Docker `api` service is not the primary supported path right now. The suppor
 │   Web Frontend  │───▶│   FastAPI Backend    │◀───│ Shared Local LLM│
 │   React + Vite  │    │   Python 3.10       │    │  llama.cpp      │
 │   Built to dist │    │   Host runtime      │    │  Host runtime    │
-│   Served at /   │    │   Port 8356         │    │  Port 8472       │
+│   Served at /   │    │   Port 8356         │    │  Port 8096       │
 │   via backend   │    │   Serves API + SPA  │    └─────────────────┘
 └─────────────────┘    └──────────┬──────────┘
                                    │
@@ -90,6 +90,110 @@ The Docker `api` service is not the primary supported path right now. The suppor
 
 ## Recent Parsing / Retrieval Changes
 
+- Phase 2 foundation is now live in backend and web:
+  - real multi-user registration via `POST /api/v1/auth/register`
+  - onboarding APIs:
+    - `GET /api/v1/auth/onboarding/status`
+    - `POST /api/v1/auth/onboarding/profile`
+    - `POST /api/v1/auth/onboarding/banks`
+    - `POST /api/v1/auth/onboarding/complete`
+  - account hierarchy APIs:
+    - `GET /api/v1/accounts`
+    - `GET /api/v1/accounts/tree`
+    - `GET /api/v1/accounts/{account_id}/statements`
+  - persistent assistant APIs:
+    - `GET /api/v1/conversations`
+    - `POST /api/v1/conversations`
+    - `GET /api/v1/conversations/{thread_id}/messages`
+    - `POST /api/v1/conversations/{thread_id}/reply`
+    - `POST /api/v1/conversations/{thread_id}/resolve`
+  - statement review APIs:
+    - `GET /api/v1/statements/{statement_id}/review`
+    - `POST /api/v1/statements/{statement_id}/transactions/{txn_id}/annotate`
+    - `POST /api/v1/statements/{statement_id}/transactions/{txn_id}/verify`
+    - `POST /api/v1/statements/{statement_id}/bulk-verify`
+  - tax portal APIs:
+    - `POST /api/v1/tax/upload-portal-document`
+    - `GET /api/v1/tax/verification/{fy}`
+    - `GET /api/v1/tax/portal-data/{fy}`
+    - `GET /api/v1/tax/discrepancies/{fy}`
+- New Phase 2 relational models are applied in the live schema:
+  - `institutions`
+  - `accounts`
+  - `balance_snapshots`
+  - `transaction_annotations`
+  - `conversation_threads`
+  - `conversation_messages`
+  - `tax_portal_data`
+- `statements.account_id` is now populated for both onboarding-created and parser-linked accounts.
+- The web app now includes:
+  - multi-step onboarding at `/onboarding`
+  - account hierarchy view at `/accounts`
+  - net worth workspace at `/net-worth`
+  - subscriptions workspace at `/subscriptions`
+  - threaded assistant at `/assistant`
+  - statement review workspace at `/statements/:statementId/review`
+  - transaction bulk-edit and split workflow on `/transactions`
+  - Tax & Audit portal verification upload section
+  - statement review now uses `react-pdf` with page navigation, zoom, and page-linked annotations
+- Transaction workflow APIs are now live:
+  - `POST /api/v1/transactions/bulk-update`
+  - `POST /api/v1/transactions/{txn_id}/split`
+- New transaction split lineage table is now applied in schema:
+  - `transaction_splits`
+- Transactions page now supports:
+  - row selection
+  - bulk note/tag/category/nature/exclude updates
+  - single-transaction split into multiple child canonical transactions
+  - exclusion of the original source transaction after split
+- Transaction audit/detail is now live:
+  - `GET /api/v1/transactions/{txn_id}/detail`
+  - includes canonical transaction fields, parsed source evidence, override history, split parent, and split children
+  - transaction sources now include `statement_id` so UI can jump back into statement review
+- Web ledger workflow now includes:
+  - `/transactions/:transactionId`
+  - editable transaction detail with source evidence, override history, and split lineage
+  - dashboard recent transactions and recent statements now deep-link into transaction detail and statement review
+- Net worth APIs are now live:
+  - `GET /api/v1/net-worth/overview`
+  - `POST /api/v1/net-worth/manual-snapshots`
+  - `DELETE /api/v1/net-worth/manual-snapshots/{snapshot_id}`
+- Subscriptions API is now live:
+  - `GET /api/v1/subscriptions`
+- Statement parsing now upserts statement-derived balance snapshots:
+  - savings/current statements contribute `closing_balance` as assets
+  - credit-card statements contribute `total_amount_due` as liabilities
+  - existing statement snapshots are backfilled on-demand when net worth is opened
+- Live smoke verification on 2026-04-06:
+  - disposable user created through live API
+  - manual net-worth snapshot inserted successfully
+  - `GET /api/v1/net-worth/overview` returned expected total (`₹125000`)
+  - `GET /api/v1/subscriptions` returned `200`
+- Live transaction workflow verification on 2026-04-07:
+  - disposable user created through live API
+  - seeded canonical transaction updated through `POST /api/v1/transactions/bulk-update`
+  - same transaction split through `POST /api/v1/transactions/{txn_id}/split`
+  - original transaction excluded successfully
+  - 2 child transactions created successfully
+  - 2 `transaction_splits` lineage rows written successfully
+- Mobile Phase 2 parity now includes:
+  - onboarding screen with profile + bank/account mapping
+  - accounts hierarchy screen
+  - net worth screen with manual asset/liability entry and deletion
+  - subscriptions screen with recurring-charge status and cost estimates
+  - persistent assistant thread screen
+  - tax verification screen with portal document upload
+  - statement review screen with verify and annotation actions
+  - transactions screen selection mode for bulk updates
+  - transaction detail screen with category/nature/notes/tags/exclude editing
+  - transaction split creation on mobile
+  - source evidence and override history on mobile transaction detail
+  - navigation wiring for the above through root stack + settings quick access
+  - authenticated PDF download to local cache + system share/open flow for statement review
+- Mobile login now uses real `/auth/register` for account creation instead of first-user-only `/auth/setup`.
+- `GET /api/v1/accounts/tree` UUID serialization bug is fixed.
+- `POST /api/v1/conversations/{thread_id}/resolve` async refresh bug is fixed.
+- Main navigation now surfaces assistant pending-question count.
 - Upload API now accepts `pdf/xlsx/xls/csv`:
   - statement parsing remains PDF-first
   - spreadsheet/CSV uploads are stored as `document_artifacts` and routed through tax/demat classification
@@ -615,16 +719,17 @@ cd /home/ankit/Documents/local-llm
 ```
 
 ### Model Details
-- **File**: `/home/ankit/Documents/local-llm/models/unsloth-Qwen3.5-27B-GGUF/Qwen3.5-27B-Q3_K_M.gguf`
-- **Model**: Qwen3.5-27B, Q3_K_M quantization
-- **GPU**: NVIDIA RTX A5000 (24GB VRAM) — all 65 layers offloaded
-- **Performance**: ~27 tokens/sec
-- **API**: OpenAI-compatible at `http://localhost:8472/v1`
+- **File**: `/home/ankit/Documents/local-llm/models/unsloth-Qwen3-VL-8B-Instruct-GGUF/Qwen3-VL-8B-Instruct-Q4_K_M.gguf`
+- **Model**: Qwen3-VL-8B-Instruct, Q4_K_M quantization
+- **GPU**: NVIDIA RTX A5000 (24GB VRAM)
+- **Primary API**: OpenAI-compatible at `http://localhost:8096/v1`
+- **OCR API**: OpenAI-compatible at `http://localhost:8095/v1`
 - **Ownership**: model runtime is managed in `/home/ankit/Documents/local-llm`, not in this repo
 
 ### LLM Usage in App
 - **Feature-flagged**: `LLM_ENABLED=true` in `.env`
-- **Fallback for 0-transaction parsing**: When template parser returns 0 transactions
+- **Primary statement extraction**: `Qwen3-VL` page-image parsing for supported PDF statement flows
+- **Fallback for 0-transaction parsing**: deterministic/text fallback remains available when vision extraction is insufficient
 - **Merchant normalization**: Clean up messy raw merchant descriptions
 - **Category suggestion**: Pick best category from list
 - **PII sanitized** before any LLM call (cards, names, PAN, Aadhaar, OTPs stripped)
@@ -757,25 +862,30 @@ docker compose down                  # Stop
 
 ## Current Gaps / Operational Notes
 
-1. **Parser coverage is still bank-template heavy** — HDFC, Axis, and SBI formats are the strongest supported paths. Kotak, BOB, ICICI, and atypical statement layouts still depend on classifier heuristics and LLM fallback, so some imports remain unresolved.
+1. **Parser coverage is now mixed deterministic + vision-first** — real validation is complete for BOB savings, HDFC credit card, and ICICI savings using `llm_vision_page_extract`. Remaining long-tail formats still need more parser tuning.
 2. **Gmail OAuth is not usable until credentials are configured** — `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` are empty by default.
 3. **Docker API runtime is not the recommended path** — the verified topology is host backend + Docker db/redis + host LLM.
 4. **Expo prebuild still wipes native Android customizations** — after `expo prebuild --clean`, the SMS reader Kotlin files and `MainApplication.kt` integration must be restored.
 5. **Expo debug loader can emit a non-fatal startup warning** — during Metro handoff on device, a dev-only loading popup warning may appear even though the app stays alive.
 6. **Redis is present but lightly used** — there is no full background worker pipeline yet.
 7. **Frontend bundle is large** — the production build currently reports a Vite chunk-size warning, but it builds and runs correctly.
+8. **Large recursive folder imports are now incremental** — artifacts/statements become visible during the run instead of only at the final commit.
 
 ---
 
-## Verified State (2026-03-29)
+## Verified State (2026-04-06)
 
 - Backend health endpoint returns OK
-- Shared local LLM responds on `:8472`
+- Primary local vision LLM responds on `:8096`
+- Local OCR model responds on `:8095`
 - Frontend production build succeeds
-- Backend pytest suite passes: `27 passed`
+- Targeted backend tests for the new importer + vision stack pass: `12 passed`
 - Seeded categories are available after login: `73`
 - Web frontend renders through the backend-served SPA
-- Android debug app installs and launches on a connected physical device
+- Real dataset validation succeeded for:
+  - `0206-statement.pdf` -> `BOB savings` -> `13` rows
+  - `ANKIT-HDFC-CC-STATEMENT.pdf` -> `HDFC credit_card` -> `66` rows
+  - `9719-statement.pdf` -> `ICICI savings` -> `186` rows
 
 ---
 

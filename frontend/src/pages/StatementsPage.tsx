@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { FileText, Calendar, CreditCard } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { ReviewTask, Statement, StatementIntegrityResponse } from '../api/client';
 
 export default function StatementsPage() {
+  const navigate = useNavigate();
   const [statements, setStatements] = useState<Statement[]>([]);
   const [integrityById, setIntegrityById] = useState<Record<string, StatementIntegrityResponse>>({});
   const [loading, setLoading] = useState(true);
@@ -252,6 +254,12 @@ export default function StatementsPage() {
                   disabled={openingPdfId === stmt.id}
                 >
                   {openingPdfId === stmt.id ? 'Opening PDF...' : 'View PDF'}
+                </button>
+                <button
+                  className="hc-btn hc-btn-solid"
+                  onClick={() => navigate(`/statements/${stmt.id}/review`)}
+                >
+                  Review
                 </button>
                 <button
                   className="hc-btn hc-btn-outline"

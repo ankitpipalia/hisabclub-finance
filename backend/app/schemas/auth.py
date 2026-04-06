@@ -6,7 +6,19 @@ class SetupRequest(BaseModel):
     display_name: str
     password: str
     first_name: str | None = None
+    last_name: str | None = None
     date_of_birth: str | None = None  # DDMMYYYY
+    pan_number: str | None = None
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    display_name: str
+    password: str
+    first_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: str | None = None  # DDMMYYYY
+    pan_number: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -61,6 +73,39 @@ class UserResponse(BaseModel):
     id: str
     email: str
     display_name: str
+    first_name: str | None = None
+    last_name: str | None = None
+    onboarding_completed: bool = False
+    onboarding_step: int = 0
 
     class Config:
         from_attributes = True
+
+
+class OnboardingProfileRequest(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: str | None = None
+    pan_number: str | None = None
+
+
+class OnboardingAccountItem(BaseModel):
+    account_type: str
+    account_number_masked: str | None = None
+    nickname: str | None = None
+
+
+class OnboardingBankItem(BaseModel):
+    institution_name: str
+    accounts: list[OnboardingAccountItem]
+
+
+class OnboardingBanksRequest(BaseModel):
+    banks: list[OnboardingBankItem]
+
+
+class OnboardingStatusResponse(BaseModel):
+    completed: bool
+    current_step: int
+    profile_complete: bool
+    accounts_count: int

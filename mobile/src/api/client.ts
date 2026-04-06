@@ -1,10 +1,17 @@
 import { getToken, setToken, clearToken, getServerUrl } from '../utils/storage';
 import { DEFAULT_API_URL } from '../utils/constants';
+import * as FileSystem from 'expo-file-system/legacy';
 import type {
   Statement,
+  StatementReview,
+  StatementAnnotation,
   Transaction,
+  TransactionBulkUpdateResponse,
+  TransactionDetail,
   TransactionListResponse,
   TransactionFilters,
+  TransactionSplitPart,
+  TransactionSplitResponse,
   Category,
   SmsBatchItem,
   SmsBatchResponse,
@@ -13,6 +20,21 @@ import type {
   RecurringPattern,
   BudgetWithSpent,
   Bill,
+  UserProfile,
+  OnboardingStatus,
+  Institution,
+  OnboardingBank,
+  Account,
+  AccountInstitutionGroup,
+  AccountStatementsSummary,
+  ConversationThread,
+  ConversationMessage,
+  ConversationReplyResult,
+  TaxPortalData,
+  TaxVerificationResult,
+  NetWorthOverview,
+  BalanceSnapshot,
+  SubscriptionOverview,
 } from './types';
 
 let _onUnauthorized: (() => void) | null = null;
@@ -101,10 +123,49 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return response.json();
 }
 
+async function requestBlob(path: string, options: RequestInit = {}): Promise<Blob> {
+  const baseUrl = await getBaseUrl();
+  const token = await getToken();
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> || {}),
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(`${baseUrl}${path}`, { ...options, headers });
+  if (response.status === 401) {
+    await clearToken();
+    _onUnauthorized?.();
+    throw new ApiError(401, 'Unauthorized');
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => 'File request failed');
+    throw new ApiError(response.status, detail || 'File request failed');
+  }
+  return response.blob();
+}
+
 // Auth
 export async function setup(data: { email: string; display_name: string; password: string }) {
   const result = await request<{ access_token: string; refresh_token: string }>(
     '/auth/setup',
+    { method: 'POST', body: JSON.stringify(data) },
+  );
+  await setToken(result.access_token);
+  return result;
+}
+
+export async function register(data: {
+  email: string;
+  display_name: string;
+  password: string;
+  first_name?: string;
+  last_name?: string;
+  date_of_birth?: string;
+  pan_number?: string;
+}) {
+  const result = await request<{ access_token: string; refresh_token: string }>(
+    '/auth/register',
     { method: 'POST', body: JSON.stringify(data) },
   );
   await setToken(result.access_token);
@@ -165,7 +226,36 @@ export async function clearMyData(currentPassword: string, confirmation: string)
 }
 
 export async function getMe() {
-  return request<{ id: string; email: string; display_name: string }>('/auth/me');
+  return request<UserProfile>('/auth/me');
+}
+
+export async function getOnboardingStatus() {
+  return request<OnboardingStatus>('/auth/onboarding/status');
+}
+
+export async function updateOnboardingProfile(data: {
+  first_name?: string;
+  last_name?: string;
+  date_of_birth?: string;
+  pan_number?: string;
+}) {
+  return request<UserProfile>('/auth/onboarding/profile', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function saveOnboardingBanks(data: { banks: OnboardingBank[] }) {
+  return request<{ message: string }>('/auth/onboarding/banks', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function completeOnboarding() {
+  return request<OnboardingStatus>('/auth/onboarding/complete', {
+    method: 'POST',
+  });
 }
 
 // Upload
@@ -266,6 +356,60 @@ export async function getStatements(params?: { bank?: string }) {
   return request<{ items: Statement[]; total: number }>(`/statements${qs ? `?${qs}` : ''}`);
 }
 
+export async function getStatementReview(statementId: string) {
+  return request<StatementReview>(`/statements/${statementId}/review`);
+}
+
+export async function annotateStatementTransaction(
+  statementId: string,
+  txnId: string,
+  data: {
+    annotation_type: string;
+    content: string;
+    page_number?: number;
+    apply_changes?: boolean;
+  },
+) {
+  return request<StatementAnnotation>(`/statements/${statementId}/transactions/${txnId}/annotate`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function verifyStatementTransaction(statementId: string, txnId: string) {
+  return request<{ message: string }>(`/statements/${statementId}/transactions/${txnId}/verify`, {
+    method: 'POST',
+  });
+}
+
+export async function bulkVerifyStatement(statementId: string) {
+  return request<{ message: string }>(`/statements/${statementId}/bulk-verify`, {
+    method: 'POST',
+  });
+}
+
+export async function getStatementPdf(statementId: string) {
+  return requestBlob(`/statements/${statementId}/pdf`);
+}
+
+export async function downloadStatementPdfToCache(statementId: string, fileName?: string) {
+  const baseUrl = await getBaseUrl();
+  const token = await getToken();
+  if (!token) {
+    throw new ApiError(401, 'Unauthorized');
+  }
+  const directory = `${FileSystem.cacheDirectory}statements/`;
+  await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+  const targetName = (fileName || `statement-${statementId}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const localUri = `${directory}${targetName}`;
+  const result = await FileSystem.downloadAsync(`${baseUrl}/statements/${statementId}/pdf`, localUri, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  return result.uri;
+}
+
 export async function rereviewStatement(statementId: string) {
   return request<Statement>(`/statements/${statementId}/re-review`, {
     method: 'POST',
@@ -306,9 +450,154 @@ export async function updateTransaction(txnId: string, data: Record<string, any>
   });
 }
 
+export async function getTransactionDetail(txnId: string) {
+  return request<TransactionDetail>(`/transactions/${txnId}/detail`);
+}
+
+export async function bulkUpdateTransactions(payload: {
+  transaction_ids: string[];
+  category_id?: string | null;
+  merchant_id?: string | null;
+  transaction_nature?: string | null;
+  notes?: string | null;
+  tags?: string[] | null;
+  is_excluded?: boolean | null;
+}) {
+  return request<TransactionBulkUpdateResponse>('/transactions/bulk-update', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function splitTransaction(
+  txnId: string,
+  payload: {
+    parts: TransactionSplitPart[];
+    exclude_original?: boolean;
+  },
+) {
+  return request<TransactionSplitResponse>(`/transactions/${txnId}/split`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 // Categories
 export async function getCategories() {
   return request<Category[]>('/categories');
+}
+
+// Accounts
+export async function getAccounts() {
+  return request<Account[]>('/accounts');
+}
+
+export async function getAccountsTree() {
+  return request<AccountInstitutionGroup[]>('/accounts/tree');
+}
+
+export async function getInstitutions() {
+  return request<Institution[]>('/accounts/institutions');
+}
+
+export async function createAccount(data: {
+  institution_name: string;
+  account_type: string;
+  account_number_masked?: string;
+  nickname?: string;
+  metadata_json?: Record<string, unknown>;
+}) {
+  return request<Account>('/accounts', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getAccountStatements(accountId: string) {
+  return request<AccountStatementsSummary>(`/accounts/${accountId}/statements`);
+}
+
+// Conversations
+export async function getConversations() {
+  return request<ConversationThread[]>('/conversations');
+}
+
+export async function createConversation(data: {
+  title: string;
+  statement_id?: string;
+  initial_message?: string;
+}) {
+  return request<ConversationThread>('/conversations', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getConversationMessages(threadId: string) {
+  return request<ConversationMessage[]>(`/conversations/${threadId}/messages`);
+}
+
+export async function replyConversation(
+  threadId: string,
+  data: { message: string; apply_changes?: boolean },
+) {
+  return request<ConversationReplyResult>(`/conversations/${threadId}/reply`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function resolveConversation(threadId: string) {
+  return request<{ thread: ConversationThread; resolved: boolean }>(`/conversations/${threadId}/resolve`, {
+    method: 'POST',
+  });
+}
+
+export async function getConversationPendingCount() {
+  return request<{ pending_count: number }>('/conversations/pending-count');
+}
+
+// Tax
+export async function getTaxVerification(financialYear: string) {
+  return request<TaxVerificationResult>(`/tax/verification/${encodeURIComponent(financialYear)}`);
+}
+
+export async function getTaxPortalData(financialYear: string) {
+  return request<TaxPortalData[]>(`/tax/portal-data/${encodeURIComponent(financialYear)}`);
+}
+
+export async function getTaxDiscrepancies(financialYear: string) {
+  return request<TaxVerificationResult['discrepancies']>(`/tax/discrepancies/${encodeURIComponent(financialYear)}`);
+}
+
+export async function uploadTaxPortalDocument(
+  fileUri: string,
+  fileName: string,
+  documentType: string,
+  financialYear?: string,
+  password?: string,
+  forceReprocess: boolean = false,
+) {
+  const formData = new FormData();
+  formData.append('file', {
+    uri: fileUri,
+    name: fileName,
+    type: inferUploadMimeType(fileName),
+  } as any);
+  formData.append('document_type', documentType);
+  if (financialYear) formData.append('financial_year', financialYear);
+  if (password) formData.append('password', password);
+  if (forceReprocess) formData.append('force_reprocess', 'true');
+  return request<{
+    artifact_id: string;
+    portal_data_id: string;
+    document_type: string;
+    financial_year?: string | null;
+    message: string;
+  }>('/tax/upload-portal-document', {
+    method: 'POST',
+    body: formData,
+  });
 }
 
 // SMS
@@ -331,6 +620,38 @@ export async function getTrends(months: number = 6) {
 
 export async function getRecurring() {
   return request<RecurringPattern[]>('/insights/recurring');
+}
+
+export async function getNetWorthOverview(months: number = 12) {
+  return request<NetWorthOverview>(`/net-worth/overview?months=${months}`);
+}
+
+export async function createManualNetWorthSnapshot(data: {
+  label: string;
+  entry_kind: 'asset' | 'liability';
+  asset_type: string;
+  balance: number;
+  as_of_date: string;
+  institution_name?: string;
+  account_masked?: string;
+  currency?: string;
+  metadata_json?: Record<string, unknown>;
+  position_key?: string;
+}) {
+  return request<BalanceSnapshot>('/net-worth/manual-snapshots', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteManualNetWorthSnapshot(snapshotId: string) {
+  return request<BalanceSnapshot>(`/net-worth/manual-snapshots/${snapshotId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getSubscriptions() {
+  return request<SubscriptionOverview>('/subscriptions');
 }
 
 // ─── Budgets ───

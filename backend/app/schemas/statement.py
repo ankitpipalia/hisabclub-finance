@@ -61,3 +61,49 @@ class StatementIntegrityResponse(BaseModel):
     llm_confidence: float | None
     llm_reason: str | None
     notes: list[str]
+
+
+class StatementAnnotationResponse(BaseModel):
+    id: str
+    parsed_transaction_id: str | None = None
+    canonical_transaction_id: str | None = None
+    statement_id: str
+    annotation_type: str
+    content: str
+    llm_response: str | None = None
+    status: str
+    actions_json: dict | None = None
+    page_number: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class StatementReviewTransactionResponse(BaseModel):
+    id: str
+    canonical_transaction_id: str | None = None
+    transaction_date: date
+    posting_date: date | None = None
+    description_raw: str
+    amount: float
+    direction: str
+    confidence: float
+    is_quarantined: bool
+    extraction_method: str
+    line_number: int | None = None
+    page_number: int | None = None
+    reviewer_user_id: str | None = None
+    reviewed_at: datetime | None = None
+    annotations: list[StatementAnnotationResponse] = []
+
+
+class StatementReviewResponse(BaseModel):
+    statement: StatementResponse
+    transactions: list[StatementReviewTransactionResponse]
+    annotations: list[StatementAnnotationResponse]
+
+
+class StatementAnnotationRequest(BaseModel):
+    annotation_type: str
+    content: str
+    page_number: int | None = None
+    apply_changes: bool = False

@@ -34,16 +34,101 @@ This architecture is designed around five non-negotiable principles:
 - Current backend parsing flow is `native text -> selective OCR fallback -> parser/LLM extraction -> validation -> dedup/promotion`.
 - Savings/current statement validation now includes deterministic balance-walk checking before promotion/review gating.
 - OCR is intentionally page-selective so machine-readable PDFs do not pay the OCR cost.
-- OCR runtime remains an operational dependency: backend support exists, but the local OCR model artifacts must be present for the `8095` endpoint to become live.
+- OCR runtime is now live on the local `8095` endpoint.
 - Local LLM access is now task-routed:
-  - shared text route for classification/extraction/review
+  - primary `Qwen3-VL-8B` route for statement extraction
+  - shared local route for classification/extraction/review tasks
   - OCR route for page transcription
   - optional dedicated vision route for page-image statement extraction
-- Backend supports optional vision-first fallback extraction from rendered PDF pages when a dedicated local model such as `Qwen3-VL-8B` is configured.
-- Backend also supports primary vision-led PDF-to-JSON extraction when explicitly enabled; deterministic parser and text/OCR paths remain as fallback rather than being removed.
+- Backend now runs with primary vision-led PDF-to-JSON extraction enabled against `Qwen3-VL-8B`.
+- Deterministic parser and text/OCR paths remain as fallback rather than being removed.
 - PostgreSQL remains the correct persistence layer for this product because canonical promotion, dedup, review tasks, lineage, and auditability are transactional and relational.
 - Transaction dedup uses account-aware fingerprinting and same-direction matching to reduce cross-account false merges.
 - Sanitization preserves transaction references needed for reconciliation while masking explicit account/card identifiers.
+- Folder-import ingestion now commits incrementally per file and re-applies tenant context after commit so large recursive imports remain observable under RLS.
+- Knowledge ingestion commits before expensive statement parsing begins, which reduces long request-scoped transaction windows.
+- Real-data validation on `/home/ankit/Documents/FY24-25-Ankit-details` has already confirmed successful `Qwen3-VL` parsing for BOB savings, HDFC credit card, and ICICI savings statements.
+- Phase 2 foundation is now implemented:
+  - user profile/onboarding state on `users`
+  - seeded `institutions`
+  - first-class `accounts` linked from `statements.account_id`
+  - `balance_snapshots` for net worth history and manual positions
+  - `transaction_annotations` for statement review
+  - persistent `conversation_threads` and `conversation_messages`
+  - `tax_portal_data` for uploaded Form 16 / 26AS / AIS / TIS artifacts
+- Live Phase 2 APIs now include:
+  - `POST /api/v1/auth/register`
+  - `/api/v1/auth/onboarding/*`
+  - `/api/v1/accounts`, `/api/v1/accounts/tree`, `/api/v1/accounts/{account_id}/statements`
+  - `/api/v1/net-worth/overview`
+  - `/api/v1/net-worth/manual-snapshots`
+  - `/api/v1/subscriptions`
+  - `POST /api/v1/transactions/bulk-update`
+  - `POST /api/v1/transactions/{txn_id}/split`
+  - `GET /api/v1/transactions/{txn_id}/detail`
+  - `/api/v1/statements/{statement_id}/review`
+  - `/api/v1/statements/{statement_id}/transactions/{txn_id}/annotate`
+  - `/api/v1/statements/{statement_id}/transactions/{txn_id}/verify`
+  - `/api/v1/statements/{statement_id}/bulk-verify`
+  - `/api/v1/conversations/*`
+  - `/api/v1/tax/*`
+- The web application now exposes the corresponding Phase 2 routes:
+  - `/onboarding`
+  - `/accounts`
+  - `/net-worth`
+  - `/subscriptions`
+  - `/assistant`
+  - `/transactions` with bulk-edit and split actions
+  - `/transactions/:transactionId` for audit/detail
+  - `/statements/:statementId/review`
+- Canonical transaction editing now has first-class split lineage:
+  - `transaction_splits` records `source_canonical_txn_id -> child_canonical_txn_id`
+  - the original transaction can be excluded while preserving auditability
+  - split children remain ordinary canonical transactions and continue through existing ledger/reporting flows
+- Canonical transaction audit now has a first-class read path:
+  - sources from `transaction_sources -> parsed_transactions`
+  - user edits from `user_overrides`
+  - split lineage from `transaction_splits`
+  - transaction sources now expose `statement_id` for direct jump back into statement review
+- Net worth implementation posture:
+  - historical balances are stored in `balance_snapshots`
+  - parser ingestion upserts statement-derived snapshots at statement creation time
+  - net worth overview also backfills missing statement snapshots on demand for older statements
+  - manual assets/liabilities share the same table with `source_kind='manual'`
+- Subscription implementation posture:
+  - `/api/v1/subscriptions` is derived from refreshed `recurring_patterns`
+  - annual and monthly equivalent costs are computed server-side
+  - status is surfaced as `scheduled`, `upcoming`, `overdue`, or `inactive`
+- Web statement review now uses `react-pdf` instead of an iframe:
+  - page navigation
+  - zoom controls
+  - page-linked annotation capture
+- The mobile application now exposes corresponding Phase 2 stack/screens for:
+  - onboarding
+  - accounts hierarchy
+  - net worth
+  - subscriptions
+  - persistent assistant threads
+  - tax verification
+  - statement review
+- Mobile transactions now also support:
+  - selection mode for bulk updates
+  - mobile transaction edit form using `category_id`
+  - split creation from transaction detail
+  - source evidence and override history visibility
+- Mobile statement review now supports authenticated PDF download into local cache and handoff to native share/open flows via Expo file APIs.
+- Mobile account creation now uses the same real registration path as web (`POST /api/v1/auth/register`).
+- Two live defects found during implementation are fixed and covered by regression tests:
+  - UUID serialization in `/api/v1/accounts/tree`
+  - async refresh/expiration in `POST /api/v1/conversations/{thread_id}/resolve`
+- Transaction workflow verification now includes live API smoke coverage:
+  - bulk update of notes/tags/nature on a seeded canonical transaction
+  - split of a canonical transaction into 2 child canonical rows
+  - exclusion of the original after split
+  - persisted lineage rows in `transaction_splits`
+- Web build and mobile typecheck now also verify:
+  - transaction detail page routing
+  - mobile transaction bulk-edit and split wiring
 
 ### 1.3 Recommended Delivery Posture
 The recommended implementation path is:

@@ -4,6 +4,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import DashboardScreen from '../screens/DashboardScreen';
 import TransactionsScreen from '../screens/TransactionsScreen';
 import InsightsScreen from '../screens/InsightsScreen';
+import TaxScreen from '../screens/TaxScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import type { MainTabParamList } from './types';
@@ -30,6 +31,7 @@ export default function MainTabs() {
             Home: 'view-dashboard-outline',
             Transactions: 'swap-horizontal',
             Insights: 'chart-line',
+            Tax: 'shield-check-outline',
             Settings: 'cog-outline',
           } as const;
           return (
@@ -56,6 +58,11 @@ export default function MainTabs() {
         name="Insights"
         component={InsightsScreen}
         options={{ title: 'Insights' }}
+      />
+      <Tab.Screen
+        name="Tax"
+        component={TaxScreen}
+        options={{ title: 'Tax & Audit' }}
       />
       <Tab.Screen
         name="Settings"

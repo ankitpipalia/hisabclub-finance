@@ -243,6 +243,60 @@ export default function SettingsScreen() {
           >
             Bills
           </Button>
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('Accounts')}
+            icon="bank"
+            style={styles.navButton}
+            textColor={colors.primary}
+          >
+            Accounts
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('NetWorth')}
+            icon="diamond-stone"
+            style={styles.navButton}
+            textColor={colors.primary}
+          >
+            Net Worth
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('Subscriptions')}
+            icon="repeat"
+            style={styles.navButton}
+            textColor={colors.primary}
+          >
+            Subscriptions
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('Assistant')}
+            icon="message-processing-outline"
+            style={styles.navButton}
+            textColor={colors.primary}
+          >
+            Assistant
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('Tax')}
+            icon="shield-check-outline"
+            style={styles.navButton}
+            textColor={colors.primary}
+          >
+            Tax & Audit
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => navigation.navigate('Onboarding')}
+            icon="account-check-outline"
+            style={styles.navButton}
+            textColor={colors.primary}
+          >
+            Onboarding
+          </Button>
         </View>
       </FadeInView>
 

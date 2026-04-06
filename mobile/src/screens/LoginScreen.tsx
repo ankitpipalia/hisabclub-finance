@@ -30,6 +30,8 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [isSetupMode, setIsSetupMode] = useState(false);
   const [isForgotMode, setIsForgotMode] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -126,10 +128,12 @@ export default function LoginScreen() {
         setResetMessage(result.message);
         setResetPreviewUrl(result.preview_url);
       } else if (isSetupMode) {
-        await api.setup({
+        await api.register({
           email: email.trim(),
           display_name: displayName.trim(),
           password: password.trim(),
+          first_name: firstName.trim() || undefined,
+          last_name: lastName.trim() || undefined,
         });
       } else {
         await api.login(email.trim(), password.trim());
@@ -307,16 +311,38 @@ export default function LoginScreen() {
               )}
 
               {isSetupMode && !isForgotMode && (
-                <TextInput
-                  label="Display Name"
-                  value={displayName}
-                  onChangeText={setDisplayName}
-                  mode="outlined"
-                  autoCapitalize="words"
-                  style={styles.input}
-                  outlineColor={colors.border}
-                  activeOutlineColor={colors.primary}
-                />
+                <>
+                  <TextInput
+                    label="Display Name"
+                    value={displayName}
+                    onChangeText={setDisplayName}
+                    mode="outlined"
+                    autoCapitalize="words"
+                    style={styles.input}
+                    outlineColor={colors.border}
+                    activeOutlineColor={colors.primary}
+                  />
+                  <TextInput
+                    label="First Name"
+                    value={firstName}
+                    onChangeText={setFirstName}
+                    mode="outlined"
+                    autoCapitalize="words"
+                    style={styles.input}
+                    outlineColor={colors.border}
+                    activeOutlineColor={colors.primary}
+                  />
+                  <TextInput
+                    label="Last Name"
+                    value={lastName}
+                    onChangeText={setLastName}
+                    mode="outlined"
+                    autoCapitalize="words"
+                    style={styles.input}
+                    outlineColor={colors.border}
+                    activeOutlineColor={colors.primary}
+                  />
+                </>
               )}
 
               <Button

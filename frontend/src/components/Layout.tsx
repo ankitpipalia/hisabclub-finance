@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import {
   LayoutDashboard,
   Upload,
   List,
   FileText,
+  Landmark,
+  Gem,
   BarChart3,
   Wallet,
   Receipt,
@@ -15,8 +17,10 @@ import {
   LogOut,
   Menu,
   X,
+  ArrowRight,
   UserRound,
   MessageSquareText,
+  Repeat,
 } from 'lucide-react';
 import { api } from '../api/client';
 import ThemeModeSelect from './ThemeModeSelect';
@@ -27,6 +31,9 @@ const navItems = [
   { to: '/upload', icon: Upload, label: 'Upload' },
   { to: '/transactions', icon: List, label: 'Transactions' },
   { to: '/statements', icon: FileText, label: 'Statements' },
+  { to: '/accounts', icon: Landmark, label: 'Accounts' },
+  { to: '/net-worth', icon: Gem, label: 'Net Worth' },
+  { to: '/subscriptions', icon: Repeat, label: 'Subscriptions' },
   { to: '/insights', icon: BarChart3, label: 'Insights' },
   { to: '/budgets', icon: Wallet, label: 'Budgets' },
   { to: '/bills', icon: Receipt, label: 'Bills' },
@@ -35,6 +42,7 @@ const navItems = [
 ];
 
 const secondaryItems = [
+  { to: '/onboarding', icon: ArrowRight, label: 'Onboarding' },
   { to: '/account', icon: UserRound, label: 'Account' },
   { to: '/gmail', icon: Mail, label: 'Gmail' },
   { to: '/imports', icon: FolderSearch, label: 'Imports' },
@@ -42,6 +50,7 @@ const secondaryItems = [
 
 export default function Layout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [pendingConversationCount, setPendingConversationCount] = useState(0);
   const closeMobileNav = () => setMobileNavOpen(false);
 
   const handleExport = async () => {
@@ -56,6 +65,25 @@ export default function Layout() {
     api.clearToken();
     window.location.href = '/login';
   };
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const result = await api.getConversationPendingCount();
+        if (active) {
+          setPendingConversationCount(result.pending_count);
+        }
+      } catch {
+        if (active) {
+          setPendingConversationCount(0);
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
     <div className="app-shell">
@@ -105,6 +133,11 @@ export default function Layout() {
             >
               <Icon size={16} strokeWidth={1.5} />
               {label}
+              {to === '/assistant' && pendingConversationCount > 0 && (
+                <span className="hc-badge hc-badge-warn" style={{ marginLeft: 'auto' }}>
+                  {pendingConversationCount}
+                </span>
+              )}
             </NavLink>
           ))}
 

@@ -57,3 +57,4 @@ class ParsedTransaction(UUIDPrimaryKeyMixin, Base):
 
     statement = relationship("Statement", back_populates="parsed_transactions")
     transaction_sources = relationship("TransactionSource", back_populates="parsed_transaction")
+    annotations = relationship("TransactionAnnotation", back_populates="parsed_transaction")
