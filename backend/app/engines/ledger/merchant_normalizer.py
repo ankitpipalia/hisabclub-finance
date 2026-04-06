@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import re
+import time
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.merchant import Merchant, MerchantPattern
+
+_PATTERN_CACHE_TTL_SEC = 300.0
+_pattern_cache: tuple[float, list[tuple[MerchantPattern, Merchant]]] | None = None
 
 
 async def normalize_and_categorize(
@@ -20,13 +24,7 @@ async def normalize_and_categorize(
     """
     description_upper = description_raw.upper().strip()
 
-    # Fetch all patterns ordered by priority (highest first)
-    result = await db.execute(
-        select(MerchantPattern, Merchant)
-        .join(Merchant, MerchantPattern.merchant_id == Merchant.id)
-        .order_by(MerchantPattern.priority.desc())
-    )
-    rows = result.all()
+    rows = await _load_patterns(db)
 
     for pattern_row, merchant in rows:
         matched = False
@@ -45,3 +43,21 @@ async def normalize_and_categorize(
             return merchant.id, merchant.default_category_id, merchant.display_name
 
     return None, None, None
+
+
+async def _load_patterns(db: AsyncSession) -> list[tuple[MerchantPattern, Merchant]]:
+    global _pattern_cache
+    now = time.monotonic()
+    if _pattern_cache is not None:
+        cached_at, rows = _pattern_cache
+        if now - cached_at <= _PATTERN_CACHE_TTL_SEC:
+            return rows
+
+    result = await db.execute(
+        select(MerchantPattern, Merchant)
+        .join(Merchant, MerchantPattern.merchant_id == Merchant.id)
+        .order_by(MerchantPattern.priority.desc())
+    )
+    rows = list(result.all())
+    _pattern_cache = (now, rows)
+    return rows

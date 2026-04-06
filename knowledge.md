@@ -17,12 +17,16 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload ba
 
 ## Current Supported Runtime
 
-This is the verified development/runtime topology as of 2026-03-30:
+This is the verified development/runtime topology as of 2026-04-06:
 
 - **Backend** runs on the host at `http://localhost:8356`
 - **Web frontend** is built to `frontend/dist` and served by the backend at `/`
 - **PostgreSQL** and **Redis** run in Docker
-- **Shared local LLM** runs outside this repo from `/home/ankit/Documents/local-llm` at `http://localhost:8472/v1`
+- **Primary local LLM** now runs outside this repo from `/home/ankit/Documents/local-llm` at `http://localhost:8096/v1`
+  - active model: `Qwen3-VL-8B-Instruct-Q4_K_M.gguf`
+- **Legacy text endpoint on `:8472` is no longer the active application path**
+- **Optional local OCR/vision endpoint** can run outside this repo from `/home/ankit/Documents/local-llm` at `http://localhost:8095/v1`
+- **Optional dedicated vision extraction endpoint** can be configured separately for page-image parsing (for example `Qwen3-VL-8B` served from a local OpenAI-compatible `/v1` endpoint)
 - **Local document knowledge** is stored in PostgreSQL and populated from uploads, folder intake, and backfill
 - **Expo Metro** runs on the host at `http://localhost:8081` for mobile debug
 - **Physical Android devices** connect through `adb reverse` for `8356` and `8081`
@@ -79,7 +83,7 @@ The Docker `api` service is not the primary supported path right now. The suppor
 | **Mobile UI** | React Native Paper (Material Design 3) | 5.15 |
 | **Mobile State** | TanStack React Query | 5.94 |
 | **SMS Reader** | Custom Kotlin native module (ContentResolver) | - |
-| **LLM** | shared llama.cpp server + Qwen3.5-27B GGUF | - |
+| **LLM** | llama.cpp `Qwen3-VL-8B-Instruct` on `:8096` | - |
 | **Containers** | Docker Compose | - |
 
 ---
@@ -89,8 +93,40 @@ The Docker `api` service is not the primary supported path right now. The suppor
 - Upload API now accepts `pdf/xlsx/xls/csv`:
   - statement parsing remains PDF-first
   - spreadsheet/CSV uploads are stored as `document_artifacts` and routed through tax/demat classification
+- Parser now supports selective OCR fallback for scanned or low-signal PDFs:
+  - native text extraction runs first
+  - only empty/low-signal pages are rendered and sent to a local OpenAI-compatible vision endpoint
+  - OCR output is merged back into the page stream before parser/LLM extraction
 - Upload and folder-import flows now ingest decrypted PDF text into `document_knowledge_chunks`.
 - Statement parsing builds same-user context from prior chunks and prior parsed statements before LLM classification or fallback extraction.
+- Local LLM access is now routed by task rather than hardwired:
+  - text extraction/classification/review use the shared text route
+  - OCR transcription uses the OCR route
+  - optional page-image statement extraction can use a separate vision route
+- Statement extraction now runs a post-parse validation pass that drops duplicate rows, invalid amounts/directions, and implausible out-of-range dates before persistence/promotion.
+- Backend now supports optional vision-first fallback extraction from rendered PDF pages:
+  - disabled by default
+  - intended for dedicated local models such as `Qwen3-VL-8B`
+  - invoked before text-only fallback when enabled for hard/low-signal statements
+- Backend now also supports **primary** vision-led PDF-to-JSON extraction:
+  - enabled only when `LLM_VISION_STATEMENT_PRIMARY=true`
+  - rendered statement pages are sent to the dedicated local vision route before template parsing
+  - template/text extraction remain as fallback for resilience
+- Vision extraction confidence defaults were raised for rows where the model omits explicit `confidence`, preventing good rows from being quarantined by default.
+- Folder import now commits incrementally:
+  - artifacts and parsed statements become visible during long imports
+  - request-scoped tenant context is re-applied after commit to satisfy RLS
+  - knowledge ingestion now commits before the expensive statement parse begins, reducing long `idle in transaction` windows
+- Real-directory validation against `/home/ankit/Documents/FY24-25-Ankit-details` now confirms successful `Qwen3-VL` parsing for:
+  - `0206-statement.pdf` -> `BOB savings`, `13` transactions
+  - `ANKIT-HDFC-CC-STATEMENT.pdf` -> `HDFC credit_card`, `66` transactions
+  - `9719-statement.pdf` -> `ICICI savings`, `186` transactions
+  - all three promoted cleanly with `parser_used=llm_vision_page_extract`
+- PostgreSQL remains the source of truth; no NoSQL replacement is planned for the ledger/review/audit path.
+- Savings/current statements now run a deterministic balance-walk check:
+  - `opening_balance + credits - debits ~= closing_balance`
+  - mismatches are stored in `statement.parse_errors.validation.balance_walk`
+  - worker promotion gates can force such statements into `review_required`
 - Bank inference now prefers statement-header matches over incidental bank names inside transaction descriptions.
 - Classifier false positives were reduced:
   - short tokens like `cas` are word-boundary matched (so `cash` no longer triggers demat by mistake)
@@ -105,6 +141,11 @@ The Docker `api` service is not the primary supported path right now. The suppor
   - same-content files with different names are treated as duplicates
   - duplicate response now includes the matched prior file name
 - Transaction dedup now has a deterministic fingerprint path (`user + account + date + abs(amount) + normalized description prefix`) in addition to fuzzy matching.
+- Transaction dedup is now account-aware in fingerprint, exact-reference, and fuzzy amount/date matching paths.
+- LLM sanitization now preserves operational transaction references such as `UPI/UTR/IMPS/NEFT/RTGS` IDs while still masking explicit account/card identifiers.
+- Credit-card integrity review now excludes quarantined rows and uses structured JSON parsing instead of free-form parsing.
+- OCR backend path is code-complete but not operationally active until OCR model artifacts are added under `/home/ankit/Documents/local-llm/models`.
+- Merchant normalization now caches merchant patterns in-process during promotion to reduce repeated full-table scans.
 - Transfer/card-payment pairing now persists auditable matches in `transfer_matches`.
 - Gmail OAuth credentials are now encrypted at rest and remain backward-compatible with previously stored plaintext rows.
 - Tax & Audit web page now uses Financial Year selection:
@@ -794,7 +835,7 @@ docker compose down                  # Stop
 
 ### Medium-term
 6. **Gmail OAuth setup** — Google Cloud Console, OAuth consent screen, restricted scope verification
-7. **OCR fallback** — Add an image-based PDF path for scanned statements
+7. **OCR fallback** — Selective low-signal page OCR is implemented; remaining work is model benchmarking on weak public-sector scans
 8. **User correction learning** — When user edits merchant/category, auto-apply to future matches
 9. **Multi-user auth** — Proper registration flow, password reset, email verification
 10. **Family mode** — Merge spouse/family cards into shared dashboard

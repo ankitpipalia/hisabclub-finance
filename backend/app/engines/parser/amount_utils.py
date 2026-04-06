@@ -85,19 +85,22 @@ def parse_indian_date(text: str) -> date | None:
                 try:
                     from datetime import datetime
 
-                    return datetime.strptime(normalized, fmt.replace("-", "/")).date()
+                    parsed = datetime.strptime(normalized, fmt.replace("-", "/")).date()
+                    return parsed if _is_reasonable_statement_date(parsed) else None
                 except ValueError:
                     continue
             else:
                 # Use dateutil for month name formats (handles MMM correctly)
                 try:
-                    return dateutil_parser.parse(text, dayfirst=True).date()
+                    parsed = dateutil_parser.parse(text, dayfirst=True).date()
+                    return parsed if _is_reasonable_statement_date(parsed) else None
                 except (ValueError, TypeError):
                     continue
 
     # Fallback to dateutil with dayfirst=True
     try:
-        return dateutil_parser.parse(text, dayfirst=True).date()
+        parsed = dateutil_parser.parse(text, dayfirst=True).date()
+        return parsed if _is_reasonable_statement_date(parsed) else None
     except (ValueError, TypeError):
         return None
 
@@ -113,3 +116,10 @@ def is_credit_indicator(text: str) -> bool | None:
     if text in ("DR", "DR.", "D", "DEBIT"):
         return False
     return None
+
+
+def _is_reasonable_statement_date(value: date) -> bool:
+    today = date.today()
+    min_date = date(2010, 1, 1)
+    max_date = date(min(today.year + 2, 2099), 12, 31)
+    return min_date <= value <= max_date

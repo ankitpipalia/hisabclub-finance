@@ -11,6 +11,8 @@ from app.config import settings
 from app.dependencies import CurrentUser, DbSession
 from app.engines.intake.doc_classifier import (
     classify_document,
+    classify_uploaded_spreadsheet,
+    infer_uploaded_bank_hint,
     classify_uploaded_pdf,
     normalize_doc_type_hint,
 )
@@ -538,7 +540,12 @@ async def upload_pdf(
         resolved_bank_hint = hints.bank_hint
         resolved_account_type_hint = hints.account_type_hint
         if auto_mode:
-            classified = classify_document(file_name)
+            classified = classify_uploaded_spreadsheet(
+                file_name,
+                content,
+                bank_hint=hints.bank_hint,
+                document_type_hint=document_type_hint,
+            )
             doc_type = classified.doc_type
             resolved_bank_hint = resolved_bank_hint or classified.bank_hint
             resolved_account_type_hint = (
@@ -629,82 +636,73 @@ async def upload_pdf(
     except Exception:
         extracted_text = ""
 
-    legacy_statement_mode = document_type_hint is None
     resolved_bank_hint = hints.bank_hint
     resolved_account_type_hint = hints.account_type_hint
-    if legacy_statement_mode:
-        doc_type = (
-            "credit_card_statement"
-            if hints.account_type_hint == "credit_card"
-            else "bank_statement"
-        )
+    auto_mode = normalized_doc_type_hint in {None, "auto"}
+    effective_document_type_hint = document_type_hint if document_type_hint is not None else "auto"
+    classified = classify_uploaded_pdf(
+        filename=file_name,
+        extracted_text=extracted_text,
+        bank_hint=hints.bank_hint,
+        account_type_hint=hints.account_type_hint,
+        document_type_hint=effective_document_type_hint,
+    )
+    doc_type = classified.doc_type
+    routed_bank_hint = infer_uploaded_bank_hint(file_name, extracted_text)
+    if hints.bank_hint is None and routed_bank_hint:
+        resolved_bank_hint = routed_bank_hint
     else:
-        auto_mode = (document_type_hint or "").strip().lower() in {"", "auto"}
-        classified = classify_uploaded_pdf(
-            filename=file_name,
-            extracted_text=extracted_text,
-            bank_hint=hints.bank_hint,
-            account_type_hint=hints.account_type_hint,
-            document_type_hint=document_type_hint,
-        )
-        doc_type = classified.doc_type
-        resolved_bank_hint = resolved_bank_hint or classified.bank_hint
-        resolved_account_type_hint = (
-            resolved_account_type_hint or classified.account_type_hint
-        )
-        if settings.llm_enabled and auto_mode and (
-            doc_type == "unknown_pdf" or classified.confidence < 0.72
-        ):
-            try:
-                from app.engines.llm.client import LLMClient
-                from app.engines.llm.document_classifier import (
-                    llm_classify_uploaded_document,
-                )
-                from app.engines.llm.router import route_model_for_task
-
-                llm_client = LLMClient(
-                    base_url=settings.llm_base_url,
-                    api_key=settings.llm_api_key,
-                    model=settings.llm_model,
-                )
-                llm_model = route_model_for_task(task="document_classification")
-                llm_classified = await llm_classify_uploaded_document(
-                    llm_client,
-                    filename=file_name,
-                    extracted_text=extracted_text,
-                    deterministic=classified,
-                    model=llm_model,
-                )
-                if (
-                    llm_classified is not None
-                    and llm_classified.confidence >= 0.62
-                    and llm_classified.doc_type != "unknown_pdf"
-                ):
-                    doc_type = llm_classified.doc_type
-                    resolved_bank_hint = llm_classified.bank_hint or resolved_bank_hint
-                    resolved_account_type_hint = (
-                        llm_classified.account_type_hint or resolved_account_type_hint
-                    )
-            except Exception:
-                pass
-
-        if auto_mode and doc_type == "unknown_pdf":
-            return UploadResponse(
-                pdf_id=str(uuid.uuid4()),
-                document_id=None,
-                status="review_required",
-                message=(
-                    "Auto-detect is uncertain for this PDF. "
-                    "Please choose the document type manually and re-upload."
-                ),
-                bank_name=resolved_bank_hint,
-                account_type=resolved_account_type_hint,
+        resolved_bank_hint = resolved_bank_hint or routed_bank_hint or classified.bank_hint
+    resolved_account_type_hint = (
+        resolved_account_type_hint or classified.account_type_hint
+    )
+    if settings.llm_enabled and auto_mode and (
+        doc_type == "unknown_pdf" or classified.confidence < 0.72
+    ):
+        try:
+            from app.engines.llm.document_classifier import (
+                llm_classify_uploaded_document,
             )
+            from app.engines.llm.factory import build_client_for_task
 
-        if resolved_account_type_hint is None and doc_type == "credit_card_statement":
-            resolved_account_type_hint = "credit_card"
-        elif resolved_account_type_hint is None and doc_type == "bank_statement":
-            resolved_account_type_hint = "bank_account"
+            llm_client, llm_target = build_client_for_task(task="document_classification")
+            llm_classified = await llm_classify_uploaded_document(
+                llm_client,
+                filename=file_name,
+                extracted_text=extracted_text,
+                deterministic=classified,
+                model=llm_target.model,
+            )
+            if (
+                llm_classified is not None
+                and llm_classified.confidence >= 0.62
+                and llm_classified.doc_type != "unknown_pdf"
+            ):
+                doc_type = llm_classified.doc_type
+                resolved_bank_hint = llm_classified.bank_hint or resolved_bank_hint
+                resolved_account_type_hint = (
+                    llm_classified.account_type_hint or resolved_account_type_hint
+                )
+        except Exception:
+            pass
+
+    if auto_mode and doc_type == "unknown_pdf":
+        return UploadResponse(
+            pdf_id=str(uuid.uuid4()),
+            document_id=None,
+            status="review_required",
+            message=(
+                "Auto-detect is uncertain for this PDF. "
+                "Please choose the document type manually and re-upload."
+            ),
+            bank_name=resolved_bank_hint,
+            account_type=resolved_account_type_hint,
+        )
+
+    if resolved_account_type_hint is None and doc_type == "credit_card_statement":
+        resolved_account_type_hint = "credit_card"
+    elif resolved_account_type_hint is None and doc_type == "bank_statement":
+        resolved_account_type_hint = "bank_account"
 
     # Hash for dedup
     file_hash = hashlib.sha256(content).hexdigest()

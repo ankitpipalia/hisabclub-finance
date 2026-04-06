@@ -1,0 +1,20 @@
+[Unit]
+Description=HisabClub backend local stack
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ankit
+Group=ankit
+WorkingDirectory=/home/ankit/Documents/personal-finance-app
+Environment=HOME=/home/ankit
+Environment=PATH=/home/ankit/.nvm/versions/node/v22.22.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/ankit/Documents/personal-finance-app/scripts/start-local-stack.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

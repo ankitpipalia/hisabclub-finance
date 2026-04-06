@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import dataclass
 
@@ -120,6 +119,7 @@ async def build_credit_card_statement_integrity(
             )
             .where(ParsedTransaction.user_id == user_id)
             .where(ParsedTransaction.statement_id == statement.id)
+            .where(ParsedTransaction.is_quarantined == False)  # noqa: E712
         )
     ).all()
 
@@ -179,11 +179,9 @@ async def _llm_integrity_review(
     eval_result: StatementIntegrityEvaluation,
 ) -> tuple[str | None, float | None, str | None]:
     try:
-        client = LLMClient(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
-        )
+        from app.engines.llm.factory import build_client_for_task
+
+        client, _ = build_client_for_task(task="integrity_review")
         top_samples = [sanitize_for_llm(row[2]) for row in txns[:8]]
         prompt = (
             "Review credit-card statement extraction integrity.\n"
@@ -200,7 +198,7 @@ async def _llm_integrity_review(
             f"Closing gap: {eval_result.closing_balance_gap}\n"
             f"Samples: {top_samples}\n"
         )
-        response = await client.chat(
+        payload = await client.chat_json(
             messages=[
                 {
                     "role": "system",
@@ -211,24 +209,31 @@ async def _llm_integrity_review(
                 },
                 {"role": "user", "content": prompt},
             ],
+            schema={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "confidence": {"type": ["number", "null"]},
+                    "reason": {"type": ["string", "null"]},
+                },
+                "required": ["status"],
+                "additionalProperties": False,
+            },
             max_tokens=180,
             temperature=0.0,
         )
-        if not response:
+        if not payload:
             return None, None, None
-        parsed = json.loads(response)
-        if not isinstance(parsed, dict):
-            return None, None, None
-        status = str(parsed.get("status", "")).strip().lower()
+        status = str(payload.get("status", "")).strip().lower()
         if status not in {"ok", "review"}:
             status = None
-        confidence = parsed.get("confidence")
+        confidence = payload.get("confidence")
         try:
             confidence = float(confidence)
             confidence = max(0.0, min(1.0, confidence))
         except Exception:
             confidence = None
-        reason = str(parsed.get("reason", "")).strip()[:220] or None
+        reason = str(payload.get("reason", "")).strip()[:220] or None
         return status, confidence, reason
     except Exception:
         return None, None, None

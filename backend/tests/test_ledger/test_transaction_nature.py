@@ -55,6 +55,15 @@ def test_regular_debit_is_expense():
     assert nature == "expense"
 
 
+def test_card_payment_merchant_is_not_misclassified_as_internal_transfer():
+    nature = infer_transaction_nature(
+        description_raw="CARD PAYMENT SWIGGY BANGALORE",
+        direction="debit",
+        account_type="savings",
+    )
+    assert nature == "expense"
+
+
 def test_tele_transfer_credit_is_transfer_internal():
     nature = infer_transaction_nature(
         description_raw="TELE TRANSFER CREDIT",

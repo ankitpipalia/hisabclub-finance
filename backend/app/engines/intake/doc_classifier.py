@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from app.engines.parser.hints import infer_bank_hint_from_text, normalize_bank_hint
 
@@ -24,7 +27,7 @@ def classify_document(path: str) -> ClassifiedDocument:
     p = Path(path)
     ext = p.suffix.lower().lstrip(".")
     text = f"{p.name} {' '.join(part for part in p.parts)}".lower()
-    text = text.replace("_", " ").replace("-", " ")
+    text = text.replace("_", " ").replace("-", " ").replace("/", " ").replace("\\", " ")
 
     bank_hint = _infer_bank_hint(text)
 
@@ -32,15 +35,34 @@ def classify_document(path: str) -> ClassifiedDocument:
         return _classify_pdf_text(text=text, bank_hint=bank_hint)
 
     if ext in {"xlsx", "xls", "csv"}:
-        if _has_any(text, ("capital gains", "stcgt", "ltcgt", "tax report")):
-            return ClassifiedDocument("demat_tax_report", confidence=0.9)
-        if _has_any(text, ("order history", "trade", "f&o", "fno", "p&l", "pnl")):
-            return ClassifiedDocument("demat_trade_report", confidence=0.9)
-        if _has_any(text, ("holdings", "mutual funds", "stocks")):
-            return ClassifiedDocument("demat_holdings", confidence=0.85)
-        return ClassifiedDocument("spreadsheet", confidence=0.6)
+        return _classify_spreadsheet_text(text=text, bank_hint=bank_hint)
 
     return ClassifiedDocument("unsupported", confidence=1.0)
+
+
+def classify_uploaded_spreadsheet(
+    filename: str,
+    content: bytes,
+    *,
+    bank_hint: str | None = None,
+    document_type_hint: str | None = None,
+) -> ClassifiedDocument:
+    normalized_doc_hint = normalize_doc_type_hint(document_type_hint)
+    inferred_bank = normalize_bank_hint(bank_hint) or _infer_bank_hint(filename)
+    if normalized_doc_hint and normalized_doc_hint != "auto":
+        return ClassifiedDocument(
+            doc_type=normalized_doc_hint,
+            bank_hint=inferred_bank,
+            account_type_hint=_account_hint_for_doc_type(normalized_doc_hint),
+            confidence=1.0,
+            source="user_hint",
+            reason="document_type_hint",
+        )
+
+    extracted_text = _extract_spreadsheet_text(filename, content)
+    merged = f"{filename} {extracted_text}".lower()
+    merged = merged.replace("_", " ").replace("-", " ").replace("/", " ").replace("\\", " ")
+    return _classify_spreadsheet_text(text=merged, bank_hint=inferred_bank)
 
 
 def classify_uploaded_pdf(
@@ -59,8 +81,12 @@ def classify_uploaded_pdf(
     normalized_doc_hint = normalize_doc_type_hint(document_type_hint)
     normalized_account_hint = (account_type_hint or "").strip().lower()
     merged_text = f"{filename} {extracted_text or ''}".lower()
-    merged_text = merged_text.replace("_", " ").replace("-", " ")
-    inferred_bank = normalize_bank_hint(bank_hint) or _infer_bank_hint(merged_text)
+    merged_text = (
+        merged_text.replace("_", " ").replace("-", " ").replace("/", " ").replace("\\", " ")
+    )
+    bank_routing_text = f"{filename} {_bank_routing_excerpt(extracted_text or '')}".lower()
+    bank_routing_text = bank_routing_text.replace("_", " ").replace("-", " ")
+    inferred_bank = normalize_bank_hint(bank_hint) or _infer_bank_hint(bank_routing_text)
 
     if normalized_doc_hint and normalized_doc_hint != "auto":
         return ClassifiedDocument(
@@ -92,6 +118,18 @@ def classify_uploaded_pdf(
 
     classified = _classify_pdf_text(text=merged_text, bank_hint=inferred_bank)
     return classified
+
+
+def infer_uploaded_bank_hint(filename: str, extracted_text: str | None = None) -> str | None:
+    filename_text = filename.lower().replace("_", " ").replace("-", " ").replace("/", " ").replace("\\", " ")
+    filename_hint = _infer_bank_hint(filename_text)
+    if filename_hint:
+        return filename_hint
+    routing_text = f"{filename} {_bank_routing_excerpt(extracted_text or '')}".lower()
+    routing_text = (
+        routing_text.replace("_", " ").replace("-", " ").replace("/", " ").replace("\\", " ")
+    )
+    return _infer_bank_hint(routing_text)
 
 
 def _infer_bank_hint(text: str) -> str | None:
@@ -130,22 +168,123 @@ def _is_investment_document(text: str) -> bool:
     )
 
 
-def _classify_pdf_text(*, text: str, bank_hint: str | None) -> ClassifiedDocument:
-    # Detect non-bank financial documents before generic "statement" matching
-    # to avoid false positives on mutual-fund and demat statements.
-    if _is_investment_document(text):
-        if _has_any(text, ("capital gains", "stcgt", "ltcgt", "gain/loss", "tax report")):
-            return ClassifiedDocument("demat_tax_report", confidence=0.93)
-        if _has_any(text, ("trade", "contract note", "order history", "f&o", "fno", "p&l", "pnl")):
-            return ClassifiedDocument("demat_trade_report", confidence=0.93)
-        if _has_any(text, ("dividend",)):
-            return ClassifiedDocument("dividend_report", confidence=0.88)
-        return ClassifiedDocument("demat_holdings", confidence=0.86)
-
-    if _has_any(text, ("ppf statement", "public provident fund", "ppf account", " ppf ")):
-        return ClassifiedDocument("ppf_statement", bank_hint=bank_hint, confidence=0.95)
+def _classify_spreadsheet_text(*, text: str, bank_hint: str | None) -> ClassifiedDocument:
     if _has_any(
         text,
+        (
+            "global transaction statement",
+            "charges account head amount",
+            "buy quantity",
+            "sell quantity",
+            "buy value",
+            "sell value",
+            "tradebook",
+            "trade book",
+            "order history",
+            "f&o",
+            "fno",
+            "equity from",
+            "mutual funds from",
+            "commodity from",
+            "currency from",
+            "segment",
+        ),
+    ):
+        return ClassifiedDocument("demat_trade_report", bank_hint=bank_hint, confidence=0.94)
+    if _has_any(text, ("capital gains", "stcgt", "ltcgt", "tax report", "gain/loss")):
+        return ClassifiedDocument("demat_tax_report", bank_hint=bank_hint, confidence=0.9)
+    if _has_any(
+        text,
+        (
+            "holdings",
+            "holding",
+            "valuation report",
+            "mutual fund summary",
+            "current amount",
+            "invested amount",
+            "portfolio",
+            "stocks",
+            "mutual funds",
+        ),
+    ):
+        return ClassifiedDocument("demat_holdings", bank_hint=bank_hint, confidence=0.88)
+    return ClassifiedDocument("spreadsheet", bank_hint=bank_hint, confidence=0.6)
+
+
+def _extract_spreadsheet_text(filename: str, content: bytes, *, max_chars: int = 30000) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".csv":
+        return content.decode("utf-8", errors="ignore")[:max_chars]
+    if suffix == ".xlsx":
+        try:
+            return _extract_xlsx_text(content, max_chars=max_chars)
+        except Exception:
+            return ""
+    if suffix == ".xls":
+        return content.decode("latin-1", errors="ignore")[:max_chars]
+    return ""
+
+
+def _extract_xlsx_text(content: bytes, *, max_chars: int = 30000) -> str:
+    ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    fragments: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            for si in root.findall("x:si", ns):
+                value = "".join(node.text or "" for node in si.findall(".//x:t", ns))
+                if value:
+                    shared_strings.append(value)
+                    fragments.append(value)
+                    if sum(len(part) for part in fragments) >= max_chars:
+                        break
+
+        workbook_name = "xl/workbook.xml"
+        if workbook_name in archive.namelist():
+            workbook = ET.fromstring(archive.read(workbook_name))
+            for sheet in workbook.findall(".//x:sheets/x:sheet", ns):
+                name = sheet.attrib.get("name")
+                if name:
+                    fragments.append(name)
+
+        for name in archive.namelist():
+            if "xl/worksheets/" not in name or not name.endswith(".xml"):
+                continue
+            root = ET.fromstring(archive.read(name))
+            for cell in root.findall(".//x:c", ns):
+                cell_type = cell.attrib.get("t")
+                value_node = cell.find("x:v", ns)
+                if value_node is None or value_node.text is None:
+                    continue
+                value = value_node.text
+                if cell_type == "s":
+                    try:
+                        idx = int(value)
+                    except ValueError:
+                        continue
+                    if 0 <= idx < len(shared_strings):
+                        fragments.append(shared_strings[idx])
+                else:
+                    fragments.append(value)
+                if sum(len(part) for part in fragments) >= max_chars:
+                    break
+            if sum(len(part) for part in fragments) >= max_chars:
+                break
+
+    text = " ".join(part.strip() for part in fragments if part and part.strip())
+    return text[:max_chars]
+
+
+def _classify_pdf_text(*, text: str, bank_hint: str | None) -> ClassifiedDocument:
+    header_text = _header_excerpt(text)
+
+    # Specific header-level document cues should outrank generic statement
+    # vocabulary like "account number" or "statement date".
+    if _has_any(header_text, ("ppf statement", "public provident fund", "ppf account", " ppf ")):
+        return ClassifiedDocument("ppf_statement", bank_hint=bank_hint, confidence=0.95)
+    if _has_any(
+        header_text,
         (
             "direct tax payment acknowledgement",
             "income tax challan",
@@ -160,42 +299,43 @@ def _classify_pdf_text(*, text: str, bank_hint: str | None) -> ClassifiedDocumen
         ),
     ):
         return ClassifiedDocument("tax_challan", confidence=0.95)
-    if _has_any(text, ("form16", "form-16", "partb")):
+    if _has_any(header_text, ("form16", "form-16", "form no. 16", "parta", "part a", "partb", "part b")):
         return ClassifiedDocument("tax_form", "form16", confidence=0.9)
-    if _has_any(text, ("form12bb", "12bb")):
+    if _has_any(header_text, ("form12bb", "12bb")):
         return ClassifiedDocument("tax_form", "form12bb", confidence=0.9)
-    if _has_any(text, ("fd", "fixed deposit")):
+    if "fixed deposit" in header_text or _has_word(header_text, "fd"):
         return ClassifiedDocument("fd_report", bank_hint=bank_hint, confidence=0.84)
-    if _looks_like_interest_certificate(text):
+    if _looks_like_interest_certificate(header_text):
         return ClassifiedDocument("interest_certificate", bank_hint=bank_hint, confidence=0.88)
-    if _has_any(text, ("capital gains", "stcgt", "ltcgt", "p&l", "pnl")):
+    if _is_investment_document(header_text):
+        if _has_any(
+            header_text,
+            (
+                "investment portfolio",
+                "consolidated investment portfolio",
+                "valuation report",
+                "mutual fund summary",
+                "demat holdings",
+                "statement of holdings",
+                "current amount",
+                "holdings as on",
+                "asset composition",
+            ),
+        ):
+            return ClassifiedDocument("demat_holdings", confidence=0.9)
+        if _has_any(header_text, ("capital gains", "stcgt", "ltcgt", "gain/loss", "tax report")):
+            return ClassifiedDocument("demat_tax_report", confidence=0.93)
+        if _has_any(header_text, ("trade", "contract note", "order history", "f&o", "fno", "p&l", "pnl")):
+            return ClassifiedDocument("demat_trade_report", confidence=0.93)
+        if _has_any(header_text, ("dividend",)):
+            return ClassifiedDocument("dividend_report", confidence=0.88)
+        return ClassifiedDocument("demat_holdings", confidence=0.86)
+    if _has_any(header_text, ("capital gains", "stcgt", "ltcgt", "p&l", "pnl")):
         return ClassifiedDocument("demat_tax_report", confidence=0.86)
-    if _has_any(text, ("holdings", "balance statement")):
+    if _has_any(header_text, ("holdings", "balance statement")):
         return ClassifiedDocument("demat_holdings", confidence=0.82)
-    if _has_any(text, ("dividend",)):
+    if _has_any(header_text, ("dividend",)):
         return ClassifiedDocument("dividend_report", confidence=0.84)
-    if bank_hint and _has_any(
-        text,
-        ("credit card statement", "card statement", "cc statement", "cc stmt"),
-    ):
-        return ClassifiedDocument(
-            "credit_card_statement",
-            bank_hint=bank_hint,
-            account_type_hint="credit_card",
-            confidence=0.76,
-            reason="bank_hint+card_statement_phrase",
-        )
-    if bank_hint and _has_any(
-        text,
-        ("account statement", "savings account", "current account", "passbook"),
-    ):
-        return ClassifiedDocument(
-            "bank_statement",
-            bank_hint=bank_hint,
-            account_type_hint="bank_account",
-            confidence=0.74,
-            reason="bank_hint+account_statement_phrase",
-        )
 
     credit_score = _keyword_score(
         text,
@@ -246,6 +386,8 @@ def _classify_pdf_text(*, text: str, bank_hint: str | None) -> ClassifiedDocumen
     if _has_any(text, ("statement", "mini statement", "transaction statement", "e statement")):
         bank_score += 1
 
+    # Let strong statement signatures win before demat/tax heuristics. Real bank
+    # statements often contain merchants like Groww or words like dividend.
     if credit_score >= 8 and credit_score >= bank_score + 2:
         confidence = _confidence_from_score(credit_score)
         return ClassifiedDocument(
@@ -280,6 +422,30 @@ def _classify_pdf_text(*, text: str, bank_hint: str | None) -> ClassifiedDocumen
             confidence=_confidence_from_score(bank_score, base=0.62),
             reason=f"bank_hint+bank_score={bank_score}",
         )
+
+    if bank_hint and _has_any(
+        header_text,
+        ("credit card statement", "card statement", "cc statement", "cc stmt"),
+    ):
+        return ClassifiedDocument(
+            "credit_card_statement",
+            bank_hint=bank_hint,
+            account_type_hint="credit_card",
+            confidence=0.76,
+            reason="bank_hint+card_statement_phrase",
+        )
+    if bank_hint and _has_any(
+        header_text,
+        ("account statement", "savings account", "current account", "passbook"),
+    ):
+        return ClassifiedDocument(
+            "bank_statement",
+            bank_hint=bank_hint,
+            account_type_hint="bank_account",
+            confidence=0.74,
+            reason="bank_hint+account_statement_phrase",
+        )
+
     return ClassifiedDocument(
         "unknown_pdf",
         bank_hint=bank_hint,
@@ -336,6 +502,55 @@ def _keyword_score(text: str, keywords: tuple[str, ...]) -> int:
             token_count = len(keyword.split())
             score += 3 if token_count >= 3 else 2
     return score
+
+
+def _header_excerpt(text: str, *, max_lines: int = 40, max_chars: int = 2500) -> str:
+    selected: list[str] = []
+    for raw_line in text.splitlines():
+        normalized = " ".join(raw_line.lower().split())
+        if any(
+            marker in normalized
+            for marker in (
+                "txn date",
+                "transaction details",
+                "value date",
+                "debit credit balance",
+                "date narration",
+                "date particulars",
+                "date description",
+            )
+        ):
+            break
+        selected.append(raw_line)
+        if len(selected) >= max_lines:
+            break
+    excerpt = "\n".join(selected)
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars]
+    return excerpt
+
+
+def _bank_routing_excerpt(text: str, *, max_lines: int = 20, max_chars: int = 1200) -> str:
+    selected: list[str] = []
+    for raw_line in text.splitlines():
+        normalized = " ".join(raw_line.lower().split())
+        if any(
+            marker in normalized
+            for marker in (
+                "txn date",
+                "transaction details",
+                "value date",
+                "debit credit balance",
+            )
+        ):
+            break
+        selected.append(raw_line)
+        if len(selected) >= max_lines:
+            break
+    excerpt = "\n".join(selected)
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars]
+    return excerpt
 
 
 def _has_word(text: str, token: str) -> bool:

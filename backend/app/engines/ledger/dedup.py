@@ -30,7 +30,12 @@ class DedupEngine:
     """
 
     async def find_duplicate(
-        self, db: AsyncSession, user_id: uuid.UUID, parsed_txn: ParsedTransaction
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        parsed_txn: ParsedTransaction,
+        *,
+        account_masked: str | None = None,
     ) -> tuple[CanonicalTransaction | None, float, str]:
         """Find a matching canonical transaction for the given parsed transaction.
 
@@ -39,7 +44,7 @@ class DedupEngine:
         # Tier 0: Deterministic fingerprint (authoritative fast path)
         fingerprint = parsed_txn.dedupe_fingerprint or build_transaction_dedupe_fingerprint(
             user_id=user_id,
-            account_masked=None,
+            account_masked=account_masked,
             transaction_date=parsed_txn.transaction_date,
             amount=float(parsed_txn.amount),
             description=parsed_txn.description_raw,
@@ -50,17 +55,21 @@ class DedupEngine:
 
         # Tier 1: Exact reference match
         if parsed_txn.reference_number:
-            match = await self._match_by_reference(db, user_id, parsed_txn)
+            match = await self._match_by_reference(db, user_id, parsed_txn, account_masked)
             if match:
                 return match, 1.0, "exact_ref"
 
         # Tier 2: Amount + date (+-1 day) + fuzzy description
-        match, confidence = await self._match_by_amount_date_desc(db, user_id, parsed_txn)
+        match, confidence = await self._match_by_amount_date_desc(
+            db, user_id, parsed_txn, account_masked
+        )
         if match:
             return match, confidence, "amount_date_desc"
 
         # Tier 3: Amount + wider date window (+-3 days) for cross-source
-        match, confidence = await self._match_by_amount_date_window(db, user_id, parsed_txn)
+        match, confidence = await self._match_by_amount_date_window(
+            db, user_id, parsed_txn, account_masked
+        )
         if match:
             return match, confidence, "fuzzy"
 
@@ -87,6 +96,7 @@ class DedupEngine:
         db: AsyncSession,
         user_id: uuid.UUID,
         parsed_txn: ParsedTransaction,
+        account_masked: str | None,
     ) -> CanonicalTransaction | None:
         """Tier 1: Find canonical transaction with matching reference number."""
         ref = parsed_txn.reference_number
@@ -94,7 +104,7 @@ class DedupEngine:
             return None
 
         # Look for existing parsed transactions with the same reference
-        result = await db.execute(
+        query = (
             select(TransactionSource, CanonicalTransaction)
             .join(
                 CanonicalTransaction,
@@ -107,9 +117,16 @@ class DedupEngine:
             .where(
                 CanonicalTransaction.user_id == user_id,
                 ParsedTransaction.reference_number == ref,
+                ParsedTransaction.direction == parsed_txn.direction,
                 ParsedTransaction.id != parsed_txn.id,
             )
         )
+        if account_masked:
+            query = query.where(
+                (CanonicalTransaction.account_masked == account_masked)
+                | (CanonicalTransaction.account_masked.is_(None))
+            )
+        result = await db.execute(query)
         row = result.first()
         if row:
             return row[1]  # The CanonicalTransaction
@@ -120,22 +137,27 @@ class DedupEngine:
         db: AsyncSession,
         user_id: uuid.UUID,
         parsed_txn: ParsedTransaction,
+        account_masked: str | None,
     ) -> tuple[CanonicalTransaction | None, float]:
         """Tier 2: Match by amount, date (+-1 day), and fuzzy description (>0.6)."""
         date_from = parsed_txn.transaction_date - timedelta(days=1)
         date_to = parsed_txn.transaction_date + timedelta(days=1)
 
-        result = await db.execute(
-            select(CanonicalTransaction).where(
-                and_(
-                    CanonicalTransaction.user_id == user_id,
-                    CanonicalTransaction.amount == float(parsed_txn.amount),
-                    CanonicalTransaction.direction == parsed_txn.direction,
-                    CanonicalTransaction.transaction_date >= date_from,
-                    CanonicalTransaction.transaction_date <= date_to,
-                )
+        query = select(CanonicalTransaction).where(
+            and_(
+                CanonicalTransaction.user_id == user_id,
+                CanonicalTransaction.amount == float(parsed_txn.amount),
+                CanonicalTransaction.direction == parsed_txn.direction,
+                CanonicalTransaction.transaction_date >= date_from,
+                CanonicalTransaction.transaction_date <= date_to,
             )
         )
+        if account_masked:
+            query = query.where(
+                (CanonicalTransaction.account_masked == account_masked)
+                | (CanonicalTransaction.account_masked.is_(None))
+            )
+        result = await db.execute(query)
         candidates = result.scalars().all()
 
         best_match: CanonicalTransaction | None = None
@@ -164,22 +186,27 @@ class DedupEngine:
         db: AsyncSession,
         user_id: uuid.UUID,
         parsed_txn: ParsedTransaction,
+        account_masked: str | None,
     ) -> tuple[CanonicalTransaction | None, float]:
         """Tier 3: Match by amount and wider date window (+-3 days) for cross-source dedup."""
         date_from = parsed_txn.transaction_date - timedelta(days=3)
         date_to = parsed_txn.transaction_date + timedelta(days=3)
 
-        result = await db.execute(
-            select(CanonicalTransaction).where(
-                and_(
-                    CanonicalTransaction.user_id == user_id,
-                    CanonicalTransaction.amount == float(parsed_txn.amount),
-                    CanonicalTransaction.direction == parsed_txn.direction,
-                    CanonicalTransaction.transaction_date >= date_from,
-                    CanonicalTransaction.transaction_date <= date_to,
-                )
+        query = select(CanonicalTransaction).where(
+            and_(
+                CanonicalTransaction.user_id == user_id,
+                CanonicalTransaction.amount == float(parsed_txn.amount),
+                CanonicalTransaction.direction == parsed_txn.direction,
+                CanonicalTransaction.transaction_date >= date_from,
+                CanonicalTransaction.transaction_date <= date_to,
             )
         )
+        if account_masked:
+            query = query.where(
+                (CanonicalTransaction.account_masked == account_masked)
+                | (CanonicalTransaction.account_masked.is_(None))
+            )
+        result = await db.execute(query)
         candidates = result.scalars().all()
 
         if not candidates:

@@ -233,12 +233,20 @@ async def parse_statement(
 ) -> Statement:
     """Main entry point: decrypt PDF, detect parser, extract data, save to DB."""
     from app.config import settings
+    from app.engines.llm.factory import (
+        build_client_for_task,
+        build_ocr_client,
+        should_use_primary_vision_statement_parse,
+        should_use_vision_for_statement_extraction,
+    )
+    from app.engines.parser.ocr import extract_text_with_ocr_fallback
     from app.engines.parser.pdf_utils import (
         decrypt_pdf,
         estimate_expected_transaction_rows,
         extract_stitched_table_rows,
         extract_text,
     )
+    from app.engines.parser.validation import validate_extracted_statement
 
     # Ensure parsers are registered
     _ensure_parsers_loaded()
@@ -257,6 +265,17 @@ async def parse_statement(
 
     # Step 2: Extract text
     pages = extract_text(pdf_bytes)
+    ocr_pair = build_ocr_client()
+    ocr_client = ocr_pair[0] if ocr_pair else None
+    ocr_result = await extract_text_with_ocr_fallback(
+        pdf_bytes=pdf_bytes,
+        text_pages=pages,
+        client=ocr_client,
+        model=ocr_pair[1].model if ocr_pair else settings.ocr_model,
+    )
+    pages = ocr_result.pages
+    used_ocr = ocr_result.used_ocr
+    parser_pipeline_warnings = list(ocr_result.warnings)
     if not pages or all(not p.strip() for p in pages):
         logger.warning(
             "No text extracted from PDF pdf_id=%s (pages=%d). "
@@ -267,7 +286,7 @@ async def parse_statement(
         raise ValueError(
             "Could not extract text from PDF. The file may be scanned (image-based), "
             "corrupted, or in a format that is not supported. "
-            "Scanned PDFs require OCR which is not yet supported."
+            "Enable local OCR fallback for scanned PDFs if this file is image-based."
         )
 
     full_text = "\n".join(pages)
@@ -300,29 +319,51 @@ async def parse_statement(
     llm_classification = None
     llm_extraction_model: str | None = None
     llm_classification_model: str | None = None
+    difficulty = None
     if settings.llm_enabled:
-        from app.engines.llm.client import LLMClient
-        from app.engines.llm.knowledge import build_statement_knowledge_context
-        from app.engines.llm.router import (
-            route_model_for_task,
-            score_statement_difficulty,
-        )
-        from app.engines.llm.statement_classifier import llm_classify_statement
+        from app.engines.llm.router import score_statement_difficulty
 
         difficulty = score_statement_difficulty(text=full_text, page_count=len(pages))
-        llm_extraction_model = route_model_for_task(
+    primary_vision_statement: ExtractedStatement | None = None
+    if settings.llm_enabled and should_use_primary_vision_statement_parse():
+        from app.engines.llm.vision_statement import llm_parse_statement_from_page_images
+
+        try:
+            vision_client, vision_target = build_client_for_task(
+                task="statement_extraction",
+                difficulty=difficulty,
+                prefer_vision=True,
+            )
+            vision_result = await llm_parse_statement_from_page_images(
+                vision_client,
+                pdf_bytes,
+                model=vision_target.model,
+                bank_hint=bank_hint,
+                account_type_hint=account_type_hint,
+            )
+            if vision_result.statement and vision_result.statement.transactions:
+                primary_vision_statement = vision_result.statement
+                primary_vision_statement.warnings.extend(vision_result.warnings)
+                primary_vision_statement.warnings.append(
+                    "Primary PDF-to-JSON vision extraction route was used before template parsing."
+                )
+        except Exception as exc:
+            logger.warning("Primary vision extraction failed for pdf_id=%s: %s", pdf_id, exc)
+
+    if settings.llm_enabled and primary_vision_statement is None:
+        from app.engines.llm.knowledge import build_statement_knowledge_context
+        from app.engines.llm.statement_classifier import llm_classify_statement
+
+        llm_client, llm_target = build_client_for_task(
             task="statement_extraction",
             difficulty=difficulty,
         )
-        llm_classification_model = route_model_for_task(
+        llm_extraction_model = llm_target.model
+        llm_classification_client, llm_classification_target = build_client_for_task(
             task="statement_classification",
             difficulty=difficulty,
         )
-        llm_client = LLMClient(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            model=llm_extraction_model,
-        )
+        llm_classification_model = llm_classification_target.model
         knowledge_context = await build_statement_knowledge_context(
             db=db,
             user_id=user_id,
@@ -333,7 +374,7 @@ async def parse_statement(
         )
         if hints.bank_hint is None or hints.account_type_hint is None:
             llm_classification = await llm_classify_statement(
-                llm_client,
+                llm_classification_client,
                 full_text,
                 model=llm_classification_model,
                 knowledge_context=knowledge_context,
@@ -348,15 +389,23 @@ async def parse_statement(
                     elif llm_classification.account_type in {"savings", "current"}:
                         account_type_hint = "bank_account"
 
-    parser = detect_parser(
+    extracted: ExtractedStatement | None = primary_vision_statement
+    parser = None if extracted is not None else detect_parser(
         full_text,
         bank_hint,
         account_type_hint,
         strict_bank_hint=bool(user_bank_hint),
         strict_account_type_hint=bool(user_account_type_hint and user_account_type_hint != "auto"),
     )
-    extracted: ExtractedStatement
-    if prefer_llm and settings.llm_enabled:
+
+    if extracted is not None:
+        logger.info(
+            "Primary vision extraction selected for pdf_id=%s: parser=%s, transactions=%d",
+            pdf_id,
+            extracted.parser_id,
+            len(extracted.transactions),
+        )
+    elif prefer_llm and settings.llm_enabled:
         from app.engines.llm.parse_fallback import llm_parse_statement
 
         llm_result = await llm_parse_statement(
@@ -373,6 +422,12 @@ async def parse_statement(
             llm_result.warnings.append("Statement was re-reviewed through the local LLM.")
             extracted = llm_result
             parser = None
+            logger.info(
+                "LLM re-review selected for pdf_id=%s: parser=%s, transactions=%d",
+                pdf_id,
+                extracted.parser_id,
+                len(extracted.transactions),
+            )
         else:
             logger.warning(
                 "Preferred LLM re-review produced no valid transactions for pdf_id=%s; falling back to parser detection.",
@@ -387,9 +442,8 @@ async def parse_statement(
                     user_account_type_hint and user_account_type_hint != "auto"
                 ),
             )
-    else:
-        extracted = None  # type: ignore[assignment]
-    if parser is None and not prefer_llm:
+
+    if extracted is None and parser is None:
         registered = [f"{p.bank_name}/{p.account_type}" for p in get_registered_parsers()]
         logger.warning(
             "No parser matched for pdf_id=%s (bank_hint=%s). "
@@ -403,16 +457,39 @@ async def parse_statement(
             logger.info("No template parser matched; attempting direct LLM parse for pdf_id=%s", pdf_id)
             try:
                 from app.engines.llm.parse_fallback import llm_parse_statement
+                from app.engines.llm.vision_statement import llm_parse_statement_from_page_images
 
-                llm_result = await llm_parse_statement(
-                    llm_client,
-                    full_text,
-                    model=llm_extraction_model,
-                    bank_hint=bank_hint,
-                    account_type_hint=account_type_hint,
-                    knowledge_context=knowledge_context,
-                    table_rows=stitched_table_rows,
-                )
+                llm_result = None
+                if should_use_vision_for_statement_extraction(
+                    prefer_llm=prefer_llm,
+                    used_ocr=used_ocr,
+                ):
+                    vision_client, vision_target = build_client_for_task(
+                        task="statement_extraction",
+                        difficulty=difficulty,
+                        prefer_vision=True,
+                    )
+                    vision_result = await llm_parse_statement_from_page_images(
+                        vision_client,
+                        pdf_bytes,
+                        model=vision_target.model,
+                        bank_hint=bank_hint,
+                        account_type_hint=account_type_hint,
+                    )
+                    if vision_result.statement and vision_result.statement.transactions:
+                        llm_result = vision_result.statement
+                        llm_result.warnings.extend(vision_result.warnings)
+
+                if llm_result is None:
+                    llm_result = await llm_parse_statement(
+                        llm_client,
+                        full_text,
+                        model=llm_extraction_model,
+                        bank_hint=bank_hint,
+                        account_type_hint=account_type_hint,
+                        knowledge_context=knowledge_context,
+                        table_rows=stitched_table_rows,
+                    )
             except Exception as exc:
                 raise ValueError(
                     "Could not identify the bank/statement type and LLM fallback failed: "
@@ -445,67 +522,78 @@ async def parse_statement(
                 f"Supported formats: {', '.join(registered)}. "
                 "Try specifying a bank_hint or check that this statement format is supported."
             )
-    else:
-        if prefer_llm and 'extracted' in locals() and extracted is not None:
-            logger.info(
-                "LLM re-review selected for pdf_id=%s: parser=%s, transactions=%d",
-                pdf_id,
-                extracted.parser_id,
-                len(extracted.transactions),
-            )
-        elif parser is None:
-            raise ValueError("Could not parse statement during local LLM re-review.")
-        else:
-            logger.info(
-                "Parser detected for pdf_id=%s: %s (%s/%s)",
-                pdf_id,
+    elif extracted is None and parser is not None:
+        logger.info(
+            "Parser detected for pdf_id=%s: %s (%s/%s)",
+            pdf_id,
+            parser.parser_id,
+            parser.bank_name,
+            parser.account_type,
+        )
+
+        try:
+            extracted = parser.parse(pages, full_text)
+        except Exception as exc:
+            logger.error(
+                "Parser %s crashed for pdf_id=%s: %s",
                 parser.parser_id,
-                parser.bank_name,
-                parser.account_type,
-            )
-
-            # Step 4: Parse
-            try:
-                extracted = parser.parse(pages, full_text)
-            except Exception as exc:
-                logger.error(
-                    "Parser %s crashed for pdf_id=%s: %s",
-                    parser.parser_id,
-                    pdf_id,
-                    exc,
-                    exc_info=True,
-                )
-                raise ValueError(
-                    f"Parser '{parser.parser_id}' failed to process this statement: {exc}. "
-                    "The PDF format may have changed. Please report this issue."
-                ) from exc
-
-            logger.info(
-                "Parser %s extracted %d transactions for pdf_id=%s (metadata: period=%s..%s, account=%s)",
-                parser.parser_id,
-                len(extracted.transactions),
                 pdf_id,
-                extracted.statement_period_start,
-                extracted.statement_period_end,
-                extracted.account_number_masked,
+                exc,
+                exc_info=True,
+            )
+            raise ValueError(
+                f"Parser '{parser.parser_id}' failed to process this statement: {exc}. "
+                "The PDF format may have changed. Please report this issue."
+            ) from exc
+
+        logger.info(
+            "Parser %s extracted %d transactions for pdf_id=%s (metadata: period=%s..%s, account=%s)",
+            parser.parser_id,
+            len(extracted.transactions),
+            pdf_id,
+            extracted.statement_period_start,
+            extracted.statement_period_end,
+            extracted.account_number_masked,
+        )
+
+        if not extracted.transactions:
+            logger.warning(
+                "Template parser %s returned 0 transactions for pdf_id=%s. "
+                "LLM_ENABLED=%s. Text preview: %s",
+                parser.parser_id,
+                pdf_id,
+                settings.llm_enabled,
+                text_preview,
             )
 
-            # Step 4b: LLM fallback if template returned 0 transactions.
-            if not extracted.transactions:
-                logger.warning(
-                    "Template parser %s returned 0 transactions for pdf_id=%s. "
-                    "LLM_ENABLED=%s. Text preview: %s",
-                    parser.parser_id,
-                    pdf_id,
-                    settings.llm_enabled,
-                    text_preview,
-                )
+            if settings.llm_enabled:
+                logger.info("Attempting LLM fallback for pdf_id=%s", pdf_id)
+                try:
+                    from app.engines.llm.parse_fallback import llm_parse_statement
+                    from app.engines.llm.vision_statement import llm_parse_statement_from_page_images
 
-                if settings.llm_enabled:
-                    logger.info("Attempting LLM fallback for pdf_id=%s", pdf_id)
-                    try:
-                        from app.engines.llm.parse_fallback import llm_parse_statement
+                    llm_result = None
+                    if should_use_vision_for_statement_extraction(
+                        prefer_llm=prefer_llm,
+                        used_ocr=used_ocr,
+                    ):
+                        vision_client, vision_target = build_client_for_task(
+                            task="statement_extraction",
+                            difficulty=difficulty,
+                            prefer_vision=True,
+                        )
+                        vision_result = await llm_parse_statement_from_page_images(
+                            vision_client,
+                            pdf_bytes,
+                            model=vision_target.model,
+                            bank_hint=bank_hint or extracted.bank_name,
+                            account_type_hint=account_type_hint,
+                        )
+                        if vision_result.statement and vision_result.statement.transactions:
+                            llm_result = vision_result.statement
+                            llm_result.warnings.extend(vision_result.warnings)
 
+                    if llm_result is None:
                         llm_result = await llm_parse_statement(
                             llm_client,
                             full_text,
@@ -515,61 +603,63 @@ async def parse_statement(
                             knowledge_context=knowledge_context,
                             table_rows=stitched_table_rows,
                         )
-                        if llm_result and llm_result.transactions:
-                            logger.info(
-                                "LLM fallback extracted %d transactions for pdf_id=%s",
-                                len(llm_result.transactions),
-                                pdf_id,
-                            )
-                            extracted.transactions = llm_result.transactions
-                            extracted.parser_id = f"{extracted.parser_id}+llm_fallback"
-                            extracted.warnings.append(
-                                f"Template parser found 0 transactions; "
-                                f"LLM fallback extracted {len(llm_result.transactions)}. "
-                                f"Review recommended."
-                            )
-                            # Inherit metadata from LLM if template didn't find any.
-                            if not extracted.account_number_masked and llm_result.account_number_masked:
-                                extracted.account_number_masked = llm_result.account_number_masked
-                            if not extracted.statement_period_start and llm_result.statement_period_start:
-                                extracted.statement_period_start = llm_result.statement_period_start
-                                extracted.statement_period_end = llm_result.statement_period_end
-                            if not extracted.due_date and llm_result.due_date:
-                                extracted.due_date = llm_result.due_date
-                            if not extracted.total_amount_due and llm_result.total_amount_due:
-                                extracted.total_amount_due = llm_result.total_amount_due
-                            if not extracted.min_amount_due and llm_result.min_amount_due:
-                                extracted.min_amount_due = llm_result.min_amount_due
-                            if not extracted.previous_balance and llm_result.previous_balance:
-                                extracted.previous_balance = llm_result.previous_balance
-                            if not extracted.payments_received and llm_result.payments_received:
-                                extracted.payments_received = llm_result.payments_received
-                            if not extracted.opening_balance and llm_result.opening_balance:
-                                extracted.opening_balance = llm_result.opening_balance
-                            if not extracted.closing_balance and llm_result.closing_balance:
-                                extracted.closing_balance = llm_result.closing_balance
-                        else:
-                            logger.warning(
-                                "LLM fallback also returned 0 transactions for pdf_id=%s",
-                                pdf_id,
-                            )
-                            extracted.warnings.append(
-                                "Template parser and LLM fallback both found 0 transactions. "
-                                "The statement format may not be supported or the text extraction failed."
-                            )
-                    except Exception as exc:
-                        logger.error(
-                            "LLM fallback failed for pdf_id=%s: %s",
+                    if llm_result and llm_result.transactions:
+                        logger.info(
+                            "LLM fallback extracted %d transactions for pdf_id=%s",
+                            len(llm_result.transactions),
                             pdf_id,
-                            exc,
-                            exc_info=True,
                         )
-                        extracted.warnings.append(f"LLM fallback failed: {exc}")
-                else:
-                    extracted.warnings.append(
-                        "Template parser found 0 transactions and LLM fallback is disabled. "
-                        "Enable LLM_ENABLED=true in configuration to try AI-based extraction."
+                        extracted.transactions = llm_result.transactions
+                        extracted.parser_id = f"{extracted.parser_id}+llm_fallback"
+                        extracted.warnings.append(
+                            f"Template parser found 0 transactions; "
+                            f"LLM fallback extracted {len(llm_result.transactions)}. "
+                            f"Review recommended."
+                        )
+                        if not extracted.account_number_masked and llm_result.account_number_masked:
+                            extracted.account_number_masked = llm_result.account_number_masked
+                        if not extracted.statement_period_start and llm_result.statement_period_start:
+                            extracted.statement_period_start = llm_result.statement_period_start
+                            extracted.statement_period_end = llm_result.statement_period_end
+                        if not extracted.due_date and llm_result.due_date:
+                            extracted.due_date = llm_result.due_date
+                        if not extracted.total_amount_due and llm_result.total_amount_due:
+                            extracted.total_amount_due = llm_result.total_amount_due
+                        if not extracted.min_amount_due and llm_result.min_amount_due:
+                            extracted.min_amount_due = llm_result.min_amount_due
+                        if not extracted.previous_balance and llm_result.previous_balance:
+                            extracted.previous_balance = llm_result.previous_balance
+                        if not extracted.payments_received and llm_result.payments_received:
+                            extracted.payments_received = llm_result.payments_received
+                        if not extracted.opening_balance and llm_result.opening_balance:
+                            extracted.opening_balance = llm_result.opening_balance
+                        if not extracted.closing_balance and llm_result.closing_balance:
+                            extracted.closing_balance = llm_result.closing_balance
+                    else:
+                        logger.warning(
+                            "LLM fallback also returned 0 transactions for pdf_id=%s",
+                            pdf_id,
+                        )
+                        extracted.warnings.append(
+                            "Template parser and LLM fallback both found 0 transactions. "
+                            "The statement format may not be supported or the text extraction failed."
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "LLM fallback failed for pdf_id=%s: %s",
+                        pdf_id,
+                        exc,
+                        exc_info=True,
                     )
+                    extracted.warnings.append(f"LLM fallback failed: {exc}")
+            else:
+                extracted.warnings.append(
+                    "Template parser found 0 transactions and LLM fallback is disabled. "
+                    "Enable LLM_ENABLED=true in configuration to try AI-based extraction."
+                )
+
+    if extracted is None:
+        raise ValueError("Could not parse statement with the configured local extraction pipeline.")
 
     # Honor explicit user hints to avoid mislabeling statements in ambiguous PDFs.
     if user_bank_hint:
@@ -598,6 +688,11 @@ async def parse_statement(
                 f"Account type hint override applied: detected {normalized_type or 'unknown'}, using savings."
             )
             extracted.account_type = "savings"
+
+    validated = validate_extracted_statement(extracted)
+    extracted.transactions = validated.transactions
+    extracted.warnings.extend(parser_pipeline_warnings)
+    extracted.warnings.extend(validated.warnings)
 
     semantic_fingerprint = build_statement_semantic_fingerprint(
         user_id=user_id,
@@ -648,9 +743,25 @@ async def parse_statement(
         parse_status = "parsed" if extracted_count else "partial"
         if extracted_count and quarantined_count:
             parse_status = "review_required"
+        if extracted_count and validated.review_required:
+            parse_status = "review_required"
         yield_rate = None
         if expected_row_count and expected_row_count > 0:
             yield_rate = round(extracted_count / expected_row_count, 4)
+
+        parse_errors_payload: dict[str, object] = {}
+        if expected_row_count or quarantined_count:
+            parse_errors_payload.update(
+                {
+                    "confidence_threshold": confidence_threshold,
+                    "expected_row_count": expected_row_count,
+                    "extracted_row_count": extracted_count,
+                    "quarantined_row_count": quarantined_count,
+                    "yield_rate": yield_rate,
+                }
+            )
+        if validated.details:
+            parse_errors_payload["validation"] = validated.details
 
         statement = Statement(
             user_id=user_id,
@@ -676,17 +787,7 @@ async def parse_statement(
             promoted_row_count=promoted_target,
             quarantined_row_count=quarantined_count,
             yield_rate=yield_rate,
-            parse_errors=(
-                {
-                    "confidence_threshold": confidence_threshold,
-                    "expected_row_count": expected_row_count,
-                    "extracted_row_count": extracted_count,
-                    "quarantined_row_count": quarantined_count,
-                    "yield_rate": yield_rate,
-                }
-                if expected_row_count or quarantined_count
-                else None
-            ),
+            parse_errors=parse_errors_payload or None,
             statement_fingerprint=semantic_fingerprint,
             version_no=(superseded_statement.version_no + 1) if superseded_statement else 1,
             supersedes_statement_id=superseded_statement.id if superseded_statement else None,
@@ -699,7 +800,15 @@ async def parse_statement(
 
         promoted_count = 0
         for txn in extracted.transactions:
-            extraction_method = "llm_fallback" if "llm" in extracted.parser_id.lower() else "template"
+            parser_id_lower = extracted.parser_id.lower()
+            if "vision" in parser_id_lower:
+                extraction_method = "vision"
+            elif "llm" in parser_id_lower:
+                extraction_method = "llm"
+            elif used_ocr:
+                extraction_method = "ocr"
+            else:
+                extraction_method = "template"
             txn_confidence = max(0.0, min(1.0, float(txn.confidence or 0.0)))
             is_quarantined = txn_confidence < confidence_threshold
             parsed = ParsedTransaction(

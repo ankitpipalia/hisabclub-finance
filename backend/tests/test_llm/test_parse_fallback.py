@@ -133,3 +133,43 @@ async def test_llm_parse_statement_uses_tier2_table_mapping():
     assert len(result.transactions) == 2
     assert result.transactions[0].direction == "debit"
     assert result.transactions[1].direction == "credit"
+
+
+@pytest.mark.asyncio
+async def test_llm_parse_statement_drops_invalid_rows_without_losing_valid_rows(monkeypatch):
+    monkeypatch.setattr(settings, "llm_iterative_chunk_chars", 1200)
+    client = _FakeLLMClient(
+        [
+            {
+                "bank_name": "ICICI",
+                "account_type": "savings",
+                "transactions": [
+                    {
+                        "date": "03/04/2025",
+                        "description": "TELE TRANSFER CREDIT 504321987654",
+                        "amount": "45000.00",
+                        "direction": "credit",
+                        "reference_number": "504321987654",
+                        "confidence": 0.84,
+                    },
+                    {
+                        "date": "not-a-date",
+                        "description": "broken row",
+                        "amount": 50,
+                        "direction": "debit",
+                    },
+                ],
+            }
+        ]
+    )
+
+    result = await llm_parse_statement(
+        client,  # type: ignore[arg-type]
+        "03/04/2025 TELE TRANSFER CREDIT 504321987654 45000.00",
+        bank_hint="ICICI",
+        account_type_hint="bank_account",
+    )
+
+    assert result is not None
+    assert len(result.transactions) == 1
+    assert result.transactions[0].reference_number == "504321987654"

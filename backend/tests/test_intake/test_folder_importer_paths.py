@@ -1,6 +1,13 @@
 from pathlib import Path
+from unittest.mock import AsyncMock
 
-from app.engines.intake.folder_importer import _path_candidates, _resolve_folder_path
+import pytest
+
+from app.engines.intake.folder_importer import (
+    _commit_with_request_context,
+    _path_candidates,
+    _resolve_folder_path,
+)
 
 
 def test_windows_drive_path_generates_posix_candidates() -> None:
@@ -28,3 +35,18 @@ def test_resolve_folder_path_uses_existing_candidate_from_home_mapping(
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     resolved = _resolve_folder_path("/Users/ankitpipalia/Downloads/ABDM/Compressed/Ankit")
     assert resolved == target.resolve()
+
+
+@pytest.mark.asyncio
+async def test_commit_with_request_context_reapplies_tenant_context(monkeypatch) -> None:
+    session = AsyncMock()
+    set_context = AsyncMock()
+    monkeypatch.setattr(
+        "app.engines.intake.folder_importer.set_request_user_context",
+        set_context,
+    )
+
+    await _commit_with_request_context(session, user_id="user-123")
+
+    session.commit.assert_awaited_once()
+    set_context.assert_awaited_once_with(session, user_id="user-123")

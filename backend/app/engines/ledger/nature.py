@@ -95,7 +95,7 @@ def infer_transaction_nature(
     account_type_norm = (account_type or "").lower().strip()
 
     if dir_norm == "debit":
-        if _contains_any(text, _CC_PAYMENT_KEYWORDS):
+        if _looks_like_credit_card_bill_payment(text, dir_norm, account_type_norm):
             return "transfer_internal"
         if _contains_any(text, _INVESTMENT_KEYWORDS):
             return "investment"
@@ -115,11 +115,13 @@ def infer_transaction_nature(
     if _contains_any(text, _SALARY_KEYWORDS):
         return "income"
     if account_type_norm == "credit_card":
-        if _contains_any(text, _CC_PAYMENT_KEYWORDS) or _looks_like_self_transfer(text):
+        if _looks_like_credit_card_bill_payment(
+            text, dir_norm, account_type_norm
+        ) or _looks_like_self_transfer(text):
             return "transfer_internal"
         # Credit entries on card statements are commonly refunds/reversals/adjustments.
         return "refund"
-    if _contains_any(text, _CC_PAYMENT_KEYWORDS):
+    if _looks_like_credit_card_bill_payment(text, dir_norm, account_type_norm):
         return "transfer_internal"
     if _looks_like_self_transfer(text):
         return "transfer_internal"
@@ -138,3 +140,55 @@ def _looks_like_self_transfer(text: str) -> bool:
     has_channel = _contains_any(text, _TRANSFER_CHANNEL_KEYWORDS)
     has_self = _contains_any(text, _SELF_TRANSFER_KEYWORDS)
     return has_channel and has_self
+
+
+def _looks_like_credit_card_bill_payment(
+    text: str,
+    direction: str,
+    account_type: str,
+) -> bool:
+    if any(token in text for token in ("TELE TRANSFER CREDIT", "TELE TRANSFER CR")):
+        return True
+    if not _contains_any(text, _CC_PAYMENT_KEYWORDS):
+        return False
+
+    bank_tokens = (
+        "HDFC",
+        "ICICI",
+        "SBI",
+        "AXIS",
+        "KOTAK",
+        "AMEX",
+        "INDUSIND",
+        "YES BANK",
+    )
+    explicit_bill_payment = any(
+        token in text
+        for token in (
+            "CREDIT CARD PAYMENT",
+            "CC PAYMENT",
+            "CCPMT",
+            "CARD PMT",
+            "CC BILL PAYMENT",
+            "PAYMENT RECEIVED",
+            "PAYMENT THANK YOU",
+            "PAYMENT-THANK YOU",
+            "CARD PAYMENT RECEIVED",
+            "TELE TRANSFER CREDIT",
+            "TELE TRANSFER CR",
+        )
+    )
+    if account_type == "credit_card" and direction == "credit":
+        return explicit_bill_payment or "AUTOPAY" in text
+    if direction == "credit" and explicit_bill_payment:
+        return True
+    if direction == "debit":
+        if explicit_bill_payment:
+            return True
+        if "CARD PAYMENT" in text and (
+            _looks_like_self_transfer(text) or _contains_any(text, bank_tokens)
+        ):
+            return True
+        if any(token in text for token in ("AUTOPAY", "BILLDESK")):
+            return True
+    return False

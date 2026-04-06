@@ -439,7 +439,13 @@ def _apply_post_parse_gates(
         integrity_status = (integrity or {}).get("status")
         integrity_ok = integrity_status in {"ok", "pass"}
 
-    all_pass = quarantine_clear and yield_rate_ok and integrity_ok
+    validation_payload = dict((statement.parse_errors or {}).get("validation") or {})
+    balance_walk = dict(validation_payload.get("balance_walk") or {})
+    bank_balance_walk_ok = True
+    if statement.account_type in {"savings", "current"} and balance_walk.get("applied"):
+        bank_balance_walk_ok = bool(balance_walk.get("ok"))
+
+    all_pass = quarantine_clear and yield_rate_ok and integrity_ok and bank_balance_walk_ok
 
     if statement.parse_status == "parsed" and not all_pass:
         statement.parse_status = "review_required"
@@ -449,6 +455,7 @@ def _apply_post_parse_gates(
         "quarantine_clear": quarantine_clear,
         "yield_rate_ok": yield_rate_ok,
         "credit_card_integrity_ok": integrity_ok,
+        "bank_balance_walk_ok": bank_balance_walk_ok,
         "all_pass": all_pass,
         "yield_rate": yield_rate,
         "expected_row_count": expected,

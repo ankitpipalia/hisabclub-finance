@@ -29,6 +29,22 @@ This architecture is designed around five non-negotiable principles:
 5. **Operational realism**
    - Queue-based asynchronous processing, idempotency keys, audit logs, secure storage, retries, re-review flows, and deletion workflows are designed in from day one.
 
+### 1.3 Current Implementation Notes
+
+- Current backend parsing flow is `native text -> selective OCR fallback -> parser/LLM extraction -> validation -> dedup/promotion`.
+- Savings/current statement validation now includes deterministic balance-walk checking before promotion/review gating.
+- OCR is intentionally page-selective so machine-readable PDFs do not pay the OCR cost.
+- OCR runtime remains an operational dependency: backend support exists, but the local OCR model artifacts must be present for the `8095` endpoint to become live.
+- Local LLM access is now task-routed:
+  - shared text route for classification/extraction/review
+  - OCR route for page transcription
+  - optional dedicated vision route for page-image statement extraction
+- Backend supports optional vision-first fallback extraction from rendered PDF pages when a dedicated local model such as `Qwen3-VL-8B` is configured.
+- Backend also supports primary vision-led PDF-to-JSON extraction when explicitly enabled; deterministic parser and text/OCR paths remain as fallback rather than being removed.
+- PostgreSQL remains the correct persistence layer for this product because canonical promotion, dedup, review tasks, lineage, and auditability are transactional and relational.
+- Transaction dedup uses account-aware fingerprinting and same-direction matching to reduce cross-account false merges.
+- Sanitization preserves transaction references needed for reconciliation while masking explicit account/card identifiers.
+
 ### 1.3 Recommended Delivery Posture
 The recommended implementation path is:
 

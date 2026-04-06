@@ -97,3 +97,37 @@ async def test_llm_client_chat_json_sets_response_format(monkeypatch):
         "json_object",
         "json_schema",
     }
+
+
+@pytest.mark.asyncio
+async def test_llm_client_chat_vision_json_sets_response_format(monkeypatch):
+    from app.engines.llm import client as llm_client_module
+
+    monkeypatch.setattr(llm_client_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    client = LLMClient(
+        base_url="http://localhost:8094/v1",
+        api_key="",
+        model="Qwen3-VL-8B-Q4_K_M.gguf",
+    )
+
+    payload = await client.chat_vision_json(
+        "extract",
+        image_bytes=b"png",
+        schema={
+            "type": "object",
+            "properties": {"ok": {"type": "string"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        },
+        max_attempts=1,
+    )
+
+    assert payload is None or isinstance(payload, dict)
+    content = _FakeAsyncClient.captured["json"]["messages"][0]["content"]
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+    assert _FakeAsyncClient.captured["json"]["response_format"]["type"] in {
+        "json_object",
+        "json_schema",
+    }

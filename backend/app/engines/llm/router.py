@@ -51,6 +51,8 @@ def route_model_for_task(
         "statement_classification",
         "transfer_classification",
         "document_classification",
+        "integrity_review",
+        "correction_chat",
     }:
         return small
 

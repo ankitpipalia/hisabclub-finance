@@ -66,6 +66,18 @@ class _Chunk:
     text: str
 
 
+@dataclass(frozen=True)
+class _ValidatedPayload:
+    bank_name: str | None
+    account_type: str
+    account_number_masked: str | None
+    statement_period_start: str | None
+    statement_period_end: str | None
+    opening_balance: float | None
+    closing_balance: float | None
+    transactions: list[_LLMTransaction]
+
+
 async def llm_parse_statement(
     client: LLMClient,
     page_text: str,
@@ -131,7 +143,7 @@ async def llm_parse_statement(
         payload = await client.chat_json(
             messages,
             schema=_statement_schema(),
-            max_tokens=2600,
+            max_tokens=4096,
             temperature=0.0,
             timeout_sec=settings.llm_statement_extract_timeout_sec,
             max_attempts=settings.llm_statement_extract_max_attempts,
@@ -425,7 +437,7 @@ def _map_row_to_transaction(
         amount=amount,
         direction=direction,
         reference_number=_cell(cols, mapping.reference_col),
-        confidence=0.9,
+        confidence=0.88,
     )
 
 
@@ -513,16 +525,97 @@ def _statement_schema() -> dict:
 
 
 def _validate_payload(payload: dict) -> _LLMStatementPayload | None:
+    normalized = _normalize_payload(payload)
+    if normalized is None:
+        return None
     try:
-        return _LLMStatementPayload.model_validate(payload)
+        return _LLMStatementPayload.model_validate(
+            {
+                "bank_name": normalized.bank_name,
+                "account_type": normalized.account_type,
+                "account_number_masked": normalized.account_number_masked,
+                "statement_period_start": normalized.statement_period_start,
+                "statement_period_end": normalized.statement_period_end,
+                "opening_balance": normalized.opening_balance,
+                "closing_balance": normalized.closing_balance,
+                "transactions": [txn.model_dump() for txn in normalized.transactions],
+            }
+        )
     except ValidationError as exc:
         logger.warning("LLM payload schema validation failed: %s", exc.errors()[:2])
         return None
 
 
+def _normalize_payload(payload: dict) -> _ValidatedPayload | None:
+    if not isinstance(payload, dict):
+        return None
+
+    account_type = _normalize_account_type(
+        account_type_hint=None,
+        extracted=str(payload.get("account_type") or "unknown"),
+    )
+    opening_balance = _safe_float(payload.get("opening_balance"))
+    closing_balance = _safe_float(payload.get("closing_balance"))
+
+    raw_transactions = payload.get("transactions") or []
+    if not isinstance(raw_transactions, list):
+        raw_transactions = []
+
+    transactions: list[_LLMTransaction] = []
+    for raw_txn in raw_transactions:
+        normalized_txn = _normalize_llm_transaction(raw_txn)
+        if normalized_txn is not None:
+            transactions.append(normalized_txn)
+
+    return _ValidatedPayload(
+        bank_name=normalize_bank_hint(payload.get("bank_name")),
+        account_type=account_type,
+        account_number_masked=_string_or_none(payload.get("account_number_masked")),
+        statement_period_start=_normalized_date_string(payload.get("statement_period_start")),
+        statement_period_end=_normalized_date_string(payload.get("statement_period_end")),
+        opening_balance=opening_balance,
+        closing_balance=closing_balance,
+        transactions=transactions,
+    )
+
+
+def _normalize_llm_transaction(payload: object) -> _LLMTransaction | None:
+    if not isinstance(payload, dict):
+        return None
+
+    description = " ".join(str(payload.get("description") or "").split())
+    if not description:
+        return None
+
+    parsed_date = _parse_date(_string_or_none(payload.get("date")))
+    if parsed_date is None:
+        return None
+
+    amount = _coerce_amount(payload.get("amount"))
+    if amount is None or amount <= 0:
+        return None
+
+    direction = _coerce_direction(payload.get("direction"), description)
+    if direction is None:
+        return None
+
+    confidence = _safe_float(payload.get("confidence"))
+    return _LLMTransaction(
+        date=parsed_date.isoformat(),
+        description=description,
+        amount=amount,
+        direction=direction,
+        reference_number=_string_or_none(payload.get("reference_number")),
+        confidence=max(0.0, min(1.0, confidence if confidence is not None else 0.7)),
+    )
+
+
 def _parse_date(val: str | None) -> date | None:
     if not val:
         return None
+    parsed = parse_indian_date(val)
+    if parsed is not None:
+        return parsed
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
         try:
             if fmt == "%Y-%m-%d":
@@ -540,6 +633,39 @@ def _safe_float(val: object) -> float | None:
         return float(val)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_amount(val: object) -> float | None:
+    if isinstance(val, str):
+        parsed = parse_indian_amount(val)
+        return abs(parsed) if parsed is not None else None
+    numeric = _safe_float(val)
+    return abs(numeric) if numeric is not None else None
+
+
+def _coerce_direction(val: object, description: str) -> str | None:
+    normalized = str(val or "").strip().lower()
+    if normalized in {"credit", "debit"}:
+        return normalized
+    indicator = is_credit_indicator(str(val or ""))
+    if indicator is not None:
+        return "credit" if indicator else "debit"
+    upper = description.upper()
+    if any(token in upper for token in (" CR", " CREDIT", "DEPOSIT", "PAYMENT RECEIVED")):
+        return "credit"
+    if any(token in upper for token in (" DR", " DEBIT", "WITHDRAW", "PURCHASE", "SPENT")):
+        return "debit"
+    return None
+
+
+def _string_or_none(val: object) -> str | None:
+    text = str(val or "").strip()
+    return text or None
+
+
+def _normalized_date_string(val: object) -> str | None:
+    parsed = _parse_date(_string_or_none(val))
+    return parsed.isoformat() if parsed is not None else None
 
 
 def _normalize_account_type(

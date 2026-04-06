@@ -70,6 +70,7 @@ async def test_duplicate_upload_without_force_reprocess_returns_409(tmp_path, mo
             db=db,
             file=_make_pdf_upload("dup.pdf"),
             force_reprocess=False,
+            document_type_hint="bank_statement",
         )
 
     assert exc.value.status_code == 409
@@ -157,6 +158,7 @@ async def test_new_upload_creates_manual_upload_record_and_reviewing_status(tmp_
         user=user,
         db=db,
         file=_make_pdf_upload("new.pdf"),
+        document_type_hint="bank_statement",
     )
 
     raw_pdf = next(obj for obj in db.added if obj.__class__.__name__ == "RawPdf")
@@ -164,6 +166,62 @@ async def test_new_upload_creates_manual_upload_record_and_reviewing_status(tmp_
     assert response.status == "reviewing"
     assert seen["priority"] == 100
     assert seen["payload"]["allow_semantic_duplicate"] is False
+
+
+@pytest.mark.asyncio
+async def test_pdf_upload_prefers_routed_bank_hint_over_classifier_body_match(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(upload_api.settings, "upload_dir", str(tmp_path))
+
+    seen: dict = {}
+
+    async def _fake_enqueue_parse_job(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def _fake_ingest_pdf_knowledge(**_kwargs):
+        return 1
+
+    async def _fake_resolve_password(**_kwargs):
+        return PdfPasswordResolution(
+            password=None,
+            encrypted=False,
+            source="not_encrypted",
+            attempted=0,
+        )
+
+    monkeypatch.setattr(upload_api, "enqueue_parse_job", _fake_enqueue_parse_job)
+    monkeypatch.setattr(upload_api, "ingest_pdf_knowledge", _fake_ingest_pdf_knowledge)
+    monkeypatch.setattr(upload_api, "resolve_pdf_password", _fake_resolve_password)
+    monkeypatch.setattr(
+        upload_api,
+        "classify_uploaded_pdf",
+        lambda **_kwargs: ClassifiedDocument(
+            doc_type="bank_statement",
+            bank_hint="HDFC",
+            account_type_hint="bank_account",
+            confidence=0.97,
+        ),
+    )
+    monkeypatch.setattr(upload_api, "infer_uploaded_bank_hint", lambda *_args, **_kwargs: "SBI")
+    monkeypatch.setattr(upload_api, "extract_pdf_text", lambda *_args, **_kwargs: ["header text"])
+    monkeypatch.setattr(upload_api, "decrypt_pdf", lambda content, _password: content)
+
+    db = _DummyDb(existing_pdf=None)
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    response = await upload_api.upload_pdf(
+        user=user,
+        db=db,
+        file=_make_pdf_upload("SBI/statement-40571652298.pdf"),
+        document_type_hint="auto",
+    )
+
+    assert response.status == "reviewing"
+    assert response.bank_name == "SBI"
+    assert seen["payload"]["bank_hint"] == "SBI"
+    assert seen["payload"]["account_type_hint"] == "bank_account"
 
 
 @pytest.mark.asyncio
@@ -195,6 +253,7 @@ async def test_semantic_duplicate_job_enqueue_returns_duplicate_status(tmp_path,
         user=user,
         db=db,
         file=_make_pdf_upload("semantic-dup.pdf"),
+        document_type_hint="bank_statement",
     )
 
     assert response.status == "duplicate"
@@ -282,6 +341,63 @@ async def test_auto_mode_unknown_pdf_returns_review_required(tmp_path, monkeypat
 
     assert response.status == "review_required"
     assert "Auto-detect is uncertain" in response.message
+    assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_missing_document_type_hint_uses_auto_classification_for_non_statement_pdf(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(upload_api.settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(upload_api.settings, "llm_enabled", False)
+
+    async def _fake_resolve_password(**_kwargs):
+        return PdfPasswordResolution(
+            password=None,
+            encrypted=False,
+            source="not_encrypted",
+            attempted=0,
+        )
+
+    seen: dict = {}
+
+    async def _fake_register_non_statement_pdf(**kwargs):
+        seen.update(kwargs)
+        return UploadResponse(
+            pdf_id=str(uuid.uuid4()),
+            document_id=str(uuid.uuid4()),
+            status="success",
+            message="registered",
+            bank_name=kwargs.get("bank_hint"),
+            account_type=kwargs.get("doc_type"),
+        )
+
+    monkeypatch.setattr(upload_api, "resolve_pdf_password", _fake_resolve_password)
+    monkeypatch.setattr(
+        upload_api,
+        "classify_uploaded_pdf",
+        lambda **_kwargs: ClassifiedDocument(
+            doc_type="ppf_statement",
+            bank_hint="BOB",
+            confidence=0.93,
+        ),
+    )
+    monkeypatch.setattr(upload_api, "infer_uploaded_bank_hint", lambda *_args, **_kwargs: "BOB")
+    monkeypatch.setattr(upload_api, "_register_non_statement_pdf", _fake_register_non_statement_pdf)
+
+    db = _DummyDb(existing_pdf=None)
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    response = await upload_api.upload_pdf(
+        user=user,
+        db=db,
+        file=_make_pdf_upload("BOB/PPF/2926-Statement.pdf"),
+    )
+
+    assert response.status == "success"
+    assert response.account_type == "ppf_statement"
+    assert seen["doc_type"] == "ppf_statement"
+    assert seen["bank_hint"] == "BOB"
     assert db.added == []
 
 

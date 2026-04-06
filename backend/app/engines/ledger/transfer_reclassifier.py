@@ -163,11 +163,9 @@ async def reclassify_transfer_payments_for_user(
     llm_promoted = 0
     if use_llm and settings.llm_enabled:
         try:
-            client = LLMClient(
-                base_url=settings.llm_base_url,
-                api_key=settings.llm_api_key,
-                model=settings.llm_model,
-            )
+            from app.engines.llm.factory import build_client_for_task
+
+            client, _ = build_client_for_task(task="transfer_classification")
             for txn in txns:
                 if txn.transaction_nature == "transfer_internal":
                     continue

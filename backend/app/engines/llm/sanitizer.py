@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import re
 
+_REFERENCE_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:upi|utr|rrn|imps|neft|rtgs|txn|txnid|ref|reference|trace|order|vpa)\b"
+)
+_ACCOUNT_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:account|a/c|acct|acc(?:ount)?\s*no|card|card\s*no|ending|masked)\b"
+)
+
 
 def sanitize_for_llm(text: str) -> str:
     """Strip PII from text before sending to an LLM.
@@ -25,22 +32,18 @@ def sanitize_for_llm(text: str) -> str:
     )
 
     # Aadhaar: 12 digits in groups of 4 (with spaces/dashes)
-    sanitized = re.sub(
-        r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "XXXX XXXX XXXX", sanitized
-    )
+    sanitized = re.sub(r"\b\d{4}[\s-]\d{4}[\s-]\d{4}\b", "XXXX XXXX XXXX", sanitized)
 
     # PAN: 5 letters + 4 digits + 1 letter
     sanitized = re.sub(r"\b[A-Z]{5}\d{4}[A-Z]\b", "XXXX_PAN", sanitized)
 
-    # Card/account numbers: 13-19 digits (with optional spaces/dashes)
+    # Mask account/card numbers, but preserve transaction references such as
+    # UPI/UTR/IMPS/NEFT IDs that are required for reconciliation.
     sanitized = re.sub(
-        r"\b(?:\d[\s-]?){13,19}\b",
-        "XXXX-XXXX-XXXX-XXXX",
+        r"\b(?:\d[\s-]?){9,19}\b",
+        _mask_sensitive_numeric_id,
         sanitized,
     )
-
-    # Account numbers: 9-18 digit sequences
-    sanitized = re.sub(r"\b\d{9,18}\b", "XXXX_ACCT", sanitized)
 
     # Email addresses
     sanitized = re.sub(
@@ -62,3 +65,26 @@ def sanitize_for_llm(text: str) -> str:
     )
 
     return sanitized
+
+
+def _mask_sensitive_numeric_id(match: re.Match[str]) -> str:
+    raw = match.group(0)
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) < 9:
+        return raw
+
+    source = match.string
+    start = max(0, match.start() - 18)
+    end = min(len(source), match.end() + 18)
+    window = source[start:end]
+
+    if _REFERENCE_CONTEXT_RE.search(window):
+        return raw
+
+    if len(digits) >= 13:
+        return "XXXX-XXXX-XXXX-XXXX"
+
+    if _ACCOUNT_CONTEXT_RE.search(window):
+        return "XXXX_ACCT"
+
+    return raw

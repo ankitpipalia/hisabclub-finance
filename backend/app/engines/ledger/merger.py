@@ -37,7 +37,7 @@ async def promote_to_canonical(
     """
     # Step 1: Check for duplicates
     existing, confidence, method = await _dedup_engine.find_duplicate(
-        db, user_id, parsed_txn
+        db, user_id, parsed_txn, account_masked=account_masked
     )
 
     if existing is not None:

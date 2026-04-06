@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 
 STATEMENT_CLASSIFICATION_PROMPT_VERSION = "statement_classification_v2"
-STATEMENT_EXTRACTION_PROMPT_VERSION = "statement_extraction_v2"
+STATEMENT_EXTRACTION_PROMPT_VERSION = "statement_extraction_v3"
 DOCUMENT_CLASSIFICATION_PROMPT_VERSION = "document_classification_v1"
 
 
@@ -71,6 +71,44 @@ _EXAMPLES: tuple[FewShotExample, ...] = (
             '"direction":"debit","reference_number":null,"confidence":0.90}]}'  # noqa: E501
         ),
     ),
+    FewShotExample(
+        bank="ICICI",
+        account_type="savings",
+        user=(
+            "Chunk text:\n"
+            "Date Particulars Withdrawals Deposits Balance\n"
+            "03/04/2025 TELE TRANSFER CREDIT 504321987654 45000.00 125431.44\n"
+            "04/04/2025 CC PAYMENT HDFC BANK 15000.00 110431.44"
+        ),
+        assistant=(
+            '{"bank_name":"ICICI","account_type":"savings","account_number_masked":"XX9719",'
+            '"statement_period_start":null,"statement_period_end":null,"opening_balance":null,'
+            '"closing_balance":null,"transactions":[{"date":"2025-04-03",'
+            '"description":"TELE TRANSFER CREDIT 504321987654","amount":45000.00,'
+            '"direction":"credit","reference_number":"504321987654","confidence":0.84},'
+            '{"date":"2025-04-04","description":"CC PAYMENT HDFC BANK","amount":15000.00,'
+            '"direction":"debit","reference_number":null,"confidence":0.91}]}'  # noqa: E501
+        ),
+    ),
+    FewShotExample(
+        bank="KOTAK",
+        account_type="credit_card",
+        user=(
+            "Chunk text:\n"
+            "Tran Date Post Date Details Amount\n"
+            "15/05/2025 15/05/2025 PAYMENT RECEIVED - UPI/9876543210 22000.00 CR\n"
+            "18/05/2025 18/05/2025 SWIGGY BANGALORE 612.45 DR"
+        ),
+        assistant=(
+            '{"bank_name":"KOTAK","account_type":"credit_card","account_number_masked":"XX5061",'
+            '"statement_period_start":null,"statement_period_end":null,"opening_balance":null,'
+            '"closing_balance":null,"transactions":[{"date":"2025-05-15",'
+            '"description":"PAYMENT RECEIVED - UPI/9876543210","amount":22000.00,'
+            '"direction":"credit","reference_number":"9876543210","confidence":0.95},'
+            '{"date":"2025-05-18","description":"SWIGGY BANGALORE","amount":612.45,'
+            '"direction":"debit","reference_number":null,"confidence":0.94}]}'  # noqa: E501
+        ),
+    ),
 )
 
 
@@ -114,6 +152,11 @@ def build_statement_extraction_system_prompt() -> str:
         "- Amount must be absolute positive number.\n"
         "- Use direction for debit/credit sign semantics.\n"
         "- For date-less rows, carry forward previous row date inside that chunk.\n"
+        "- Preserve reference numbers like UPI/UTR/IMPS/NEFT/RTGS IDs when present.\n"
+        "- Do not invent bank names, account numbers, dates, or balances.\n"
+        "- Ignore statement summary rows that do not represent a transaction line item.\n"
+        "- For payment-received rows on credit-card statements, direction is credit.\n"
+        "- For bank statements, deposits/credits are credit and withdrawals/spends are debit.\n"
         "- If unsure, keep confidence below 0.6."
     )
 

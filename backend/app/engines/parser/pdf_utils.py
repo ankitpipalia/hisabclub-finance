@@ -155,8 +155,12 @@ def _looks_like_transaction_row(text: str) -> bool:
         return False
     if not _DATE_RE.search(normalized):
         return False
+    upper = normalized.upper()
+    if any(token in upper for token in ("OPENING BALANCE", "CLOSING BALANCE", "TOTAL DUE")):
+        return False
     amount_count = len(_AMOUNT_RE.findall(normalized))
-    return amount_count >= 1
+    has_alpha = any(char.isalpha() for char in normalized)
+    return has_alpha and amount_count >= 1
 
 
 def _clean_table_cell(cell: str | None) -> str:

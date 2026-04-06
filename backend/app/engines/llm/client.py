@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from urllib.parse import urlparse
@@ -49,11 +50,6 @@ class LLMClient:
         Handles timeouts, retries (up to 2), and errors gracefully.
         Returns empty string on failure rather than raising.
         """
-        url = f"{self.base_url}/chat/completions"
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
         payload = {
             "model": model or self.model,
             "messages": messages,
@@ -68,6 +64,120 @@ class LLMClient:
             payload["response_format"] = response_format
         if extra_body:
             payload.update(extra_body)
+
+        return await self._send_chat_request(
+            payload=payload,
+            timeout_sec=timeout_sec,
+            max_attempts=max_attempts,
+        )
+
+    async def chat_vision(
+        self,
+        prompt: str,
+        *,
+        image_bytes: bytes,
+        image_media_type: str = "image/png",
+        max_tokens: int = 2800,
+        temperature: float = 0.0,
+        timeout_sec: float | None = None,
+        max_attempts: int | None = None,
+        model: str | None = None,
+    ) -> str:
+        data_url = _image_bytes_to_data_url(image_bytes, image_media_type)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ]
+        payload = {
+            "model": model or self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        return await self._send_chat_request(
+            payload=payload,
+            timeout_sec=timeout_sec,
+            max_attempts=max_attempts,
+        )
+
+    async def chat_vision_json(
+        self,
+        prompt: str,
+        *,
+        image_bytes: bytes,
+        image_media_type: str = "image/png",
+        schema: dict | None = None,
+        max_tokens: int = 2800,
+        temperature: float = 0.0,
+        timeout_sec: float | None = None,
+        max_attempts: int | None = None,
+        model: str | None = None,
+    ) -> dict | None:
+        data_url = _image_bytes_to_data_url(image_bytes, image_media_type)
+        response_format: dict | None = None
+        if settings.llm_json_mode:
+            if schema:
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "finance_statement_vision_extraction",
+                        "schema": schema,
+                    },
+                }
+            else:
+                response_format = {"type": "json_object"}
+
+        payload = {
+            "model": model or self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        if response_format:
+            payload["response_format"] = response_format
+
+        text = await self._send_chat_request(
+            payload=payload,
+            timeout_sec=timeout_sec,
+            max_attempts=max_attempts,
+        )
+        if not text:
+            return None
+        cleaned = _clean_json_text(text)
+        try:
+            payload = json.loads(cleaned)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            logger.warning("LLM vision JSON decode failed for payload prefix=%s", cleaned[:180])
+        return None
+
+    async def _send_chat_request(
+        self,
+        *,
+        payload: dict,
+        timeout_sec: float | None,
+        max_attempts: int | None,
+    ) -> str:
+        url = f"{self.base_url}/chat/completions"
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
         safe_attempts = max(1, int(max_attempts or settings.llm_request_max_attempts))
         safe_timeout = max(5.0, float(timeout_sec or settings.llm_request_timeout_sec))
@@ -168,6 +278,8 @@ class LLMClient:
 
 def _clean_json_text(text: str) -> str:
     cleaned = text.strip()
+    if cleaned.startswith("<think>") and "</think>" in cleaned:
+        cleaned = cleaned.split("</think>", 1)[1].strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
     if cleaned.endswith("```"):
@@ -175,4 +287,43 @@ def _clean_json_text(text: str) -> str:
     cleaned = cleaned.strip()
     if cleaned.startswith("json"):
         cleaned = cleaned[4:].strip()
-    return cleaned
+    candidate = _extract_json_candidate(cleaned)
+    return candidate or cleaned
+
+
+def _extract_json_candidate(text: str) -> str | None:
+    starts = [idx for idx in (text.find("{"), text.find("[")) if idx >= 0]
+    if not starts:
+        return None
+
+    start = min(starts)
+    opening = text[start]
+    closing = "}" if opening == "{" else "]"
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if escape:
+            escape = False
+            continue
+        if char == "\\" and in_string:
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1].strip()
+    return None
+
+
+def _image_bytes_to_data_url(image_bytes: bytes, media_type: str) -> str:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"

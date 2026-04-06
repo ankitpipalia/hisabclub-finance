@@ -154,11 +154,9 @@ async def run_transaction_correction_chat(
         "transaction_candidates": candidates,
     }
 
-    client = LLMClient(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-    )
+    from app.engines.llm.factory import build_client_for_task
+
+    client, _ = build_client_for_task(task="correction_chat")
     llm_payload = await client.chat_json(
         messages=[
             {

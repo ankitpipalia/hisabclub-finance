@@ -25,6 +25,7 @@ from app.engines.parser.pdf_utils import extract_text as extract_pdf_text
 from app.models.document_artifact import DocumentArtifact
 from app.models.document_knowledge_chunk import DocumentKnowledgeChunk
 from app.models.raw_pdf import RawPdf
+from app.security.tenant_context import set_request_user_context
 
 
 @dataclass
@@ -71,140 +72,142 @@ async def import_folder(
 
     for path in files:
         result.discovered += 1
-        classified = classify_document(str(path))
-        result.add_doc_type(classified.doc_type)
+        artifact: DocumentArtifact | None = None
+        try:
+            classified = classify_document(str(path))
+            result.add_doc_type(classified.doc_type)
 
-        file_hash = _sha256_file(path)
-        size_bytes = path.stat().st_size
+            file_hash = _sha256_file(path)
+            size_bytes = path.stat().st_size
 
-        # Dedup in registry
-        existing_artifact = (
-            await db.execute(
-                select(DocumentArtifact).where(
-                    DocumentArtifact.user_id == user_id,
-                    DocumentArtifact.file_hash_sha256 == file_hash,
-                ).limit(1)
-            )
-        ).scalar_one_or_none()
-        artifact: DocumentArtifact
-        if existing_artifact:
-            if force_reprocess:
-                artifact = existing_artifact
-                artifact.file_path = str(path)
-                artifact.file_name = path.name
-                artifact.file_ext = path.suffix.lower().lstrip(".")
-                artifact.file_size_bytes = size_bytes
-                artifact.doc_type = classified.doc_type
-                artifact.doc_subtype = classified.doc_subtype
-                artifact.bank_hint = classified.bank_hint
-                artifact.status = "discovered"
-                artifact.parse_message = None
-            elif (
-                not dry_run
-                and existing_artifact.status == "skipped"
-                and existing_artifact.parse_message == "Dry run only"
-            ):
-                artifact = existing_artifact
-                artifact.status = "discovered"
-                artifact.parse_message = None
+            existing_artifact = (
+                await db.execute(
+                    select(DocumentArtifact).where(
+                        DocumentArtifact.user_id == user_id,
+                        DocumentArtifact.file_hash_sha256 == file_hash,
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+            if existing_artifact:
+                if force_reprocess:
+                    artifact = existing_artifact
+                    artifact.file_path = str(path)
+                    artifact.file_name = path.name
+                    artifact.file_ext = path.suffix.lower().lstrip(".")
+                    artifact.file_size_bytes = size_bytes
+                    artifact.doc_type = classified.doc_type
+                    artifact.doc_subtype = classified.doc_subtype
+                    artifact.bank_hint = classified.bank_hint
+                    artifact.status = "discovered"
+                    artifact.parse_message = None
+                elif (
+                    not dry_run
+                    and existing_artifact.status == "skipped"
+                    and existing_artifact.parse_message == "Dry run only"
+                ):
+                    artifact = existing_artifact
+                    artifact.status = "discovered"
+                    artifact.parse_message = None
+                else:
+                    result.skipped += 1
+                    await _commit_with_request_context(db, user_id)
+                    continue
             else:
+                artifact = DocumentArtifact(
+                    user_id=user_id,
+                    file_path=str(path),
+                    file_name=path.name,
+                    file_ext=path.suffix.lower().lstrip("."),
+                    file_hash_sha256=file_hash,
+                    file_size_bytes=size_bytes,
+                    doc_type=classified.doc_type,
+                    doc_subtype=classified.doc_subtype,
+                    bank_hint=classified.bank_hint,
+                    status="discovered",
+                    metadata_json={"parent_dir": str(path.parent)},
+                )
+                db.add(artifact)
+                await db.flush()
+                result.ingested += 1
+
+            if dry_run:
+                artifact.status = "skipped"
+                artifact.parse_message = "Dry run only"
+                artifact.processed_at = datetime.now(timezone.utc)
                 result.skipped += 1
+                await _commit_with_request_context(db, user_id)
                 continue
-        else:
-            artifact = DocumentArtifact(
-                user_id=user_id,
-                file_path=str(path),
-                file_name=path.name,
-                file_ext=path.suffix.lower().lstrip("."),
-                file_hash_sha256=file_hash,
-                file_size_bytes=size_bytes,
-                doc_type=classified.doc_type,
-                doc_subtype=classified.doc_subtype,
-                bank_hint=classified.bank_hint,
-                status="discovered",
-                metadata_json={"parent_dir": str(path.parent)},
-            )
-            db.add(artifact)
-            await db.flush()
-            result.ingested += 1
 
-            # Persist initial metadata only for new records.
-
-        if dry_run:
-            artifact.status = "skipped"
-            artifact.parse_message = "Dry run only"
-            artifact.processed_at = datetime.now(timezone.utc)
-            result.skipped += 1
-            continue
-
-        should_parse_pdf = (
-            parse_supported
-            and path.suffix.lower() == ".pdf"
-            and (
-                classified.doc_type in {"bank_statement", "credit_card_statement"}
-                or (
-                    classified.doc_type == "unknown_pdf"
-                    and _should_attempt_unknown_pdf_parse(path=path, bank_hint=classified.bank_hint)
+            should_parse_pdf = (
+                parse_supported
+                and path.suffix.lower() == ".pdf"
+                and (
+                    classified.doc_type in {"bank_statement", "credit_card_statement"}
+                    or (
+                        classified.doc_type == "unknown_pdf"
+                        and _should_attempt_unknown_pdf_parse(
+                            path=path, bank_hint=classified.bank_hint
+                        )
+                    )
                 )
             )
-        )
-        if not should_parse_pdf:
-            if path.suffix.lower() == ".pdf":
-                non_statement_content = b""
-                password = _password_for_path(str(path), password_map)
-                try:
-                    with open(path, "rb") as f:
-                        non_statement_content = f.read()
-                    await ingest_pdf_knowledge(
-                        db=db,
-                        user_id=user_id,
-                        pdf_content=non_statement_content,
-                        password=password,
-                        source_filename=path.name,
-                        source_kind="artifact",
-                        artifact_id=artifact.id,
-                        bank_hint=classified.bank_hint,
-                        account_type_hint=(
-                            "credit_card"
-                            if classified.doc_type == "credit_card_statement"
-                            else None
-                        ),
-                        doc_type=classified.doc_type,
-                    )
-                except Exception:
-                    pass
-                metadata = dict(artifact.metadata_json or {})
-                if classified.doc_type not in {
-                    "bank_statement",
-                    "credit_card_statement",
-                    "unknown_pdf",
-                    "unsupported_bank",
-                    "unsupported",
-                    "unsupported_file",
-                }:
-                    extracted_text = ""
-                    if non_statement_content:
-                        try:
-                            decrypted = decrypt_pdf(non_statement_content, password)
-                            pages = extract_pdf_text(decrypted)
-                            extracted_text = "\n".join(pages)
-                        except Exception:
-                            extracted_text = ""
-                    parsed = extract_tax_document_metadata(
-                        doc_type=classified.doc_type,
-                        text=extracted_text,
-                        source_filename=path.name,
-                    )
-                    metadata.update(parsed)
-                metadata["parent_dir"] = str(path.parent)
-                artifact.metadata_json = metadata
-            artifact.status = "skipped"
-            artifact.parse_message = "Registered for non-statement workflow"
-            artifact.processed_at = datetime.now(timezone.utc)
-            result.skipped += 1
-            continue
+            if not should_parse_pdf:
+                if path.suffix.lower() == ".pdf":
+                    non_statement_content = b""
+                    password = _password_for_path(str(path), password_map)
+                    try:
+                        with open(path, "rb") as f:
+                            non_statement_content = f.read()
+                        await ingest_pdf_knowledge(
+                            db=db,
+                            user_id=user_id,
+                            pdf_content=non_statement_content,
+                            password=password,
+                            source_filename=path.name,
+                            source_kind="artifact",
+                            artifact_id=artifact.id,
+                            bank_hint=classified.bank_hint,
+                            account_type_hint=(
+                                "credit_card"
+                                if classified.doc_type == "credit_card_statement"
+                                else None
+                            ),
+                            doc_type=classified.doc_type,
+                        )
+                    except Exception:
+                        pass
+                    metadata = dict(artifact.metadata_json or {})
+                    if classified.doc_type not in {
+                        "bank_statement",
+                        "credit_card_statement",
+                        "unknown_pdf",
+                        "unsupported_bank",
+                        "unsupported",
+                        "unsupported_file",
+                    }:
+                        extracted_text = ""
+                        if non_statement_content:
+                            try:
+                                decrypted = decrypt_pdf(non_statement_content, password)
+                                pages = extract_pdf_text(decrypted)
+                                extracted_text = "\n".join(pages)
+                            except Exception:
+                                extracted_text = ""
+                        parsed = extract_tax_document_metadata(
+                            doc_type=classified.doc_type,
+                            text=extracted_text,
+                            source_filename=path.name,
+                        )
+                        metadata.update(parsed)
+                    metadata["parent_dir"] = str(path.parent)
+                    artifact.metadata_json = metadata
+                artifact.status = "skipped"
+                artifact.parse_message = "Registered for non-statement workflow"
+                artifact.processed_at = datetime.now(timezone.utc)
+                result.skipped += 1
+                await _commit_with_request_context(db, user_id)
+                continue
 
-        try:
             with open(path, "rb") as f:
                 content = f.read()
 
@@ -223,6 +226,7 @@ async def import_folder(
                 )
                 artifact.processed_at = datetime.now(timezone.utc)
                 result.skipped += 1
+                await _commit_with_request_context(db, user_id)
                 continue
 
             pdf_id = uuid.uuid4()
@@ -263,6 +267,7 @@ async def import_folder(
                 )
             except Exception:
                 pass
+            await _commit_with_request_context(db, user_id)
             try:
                 statement = await parse_statement(
                     db=db,
@@ -295,6 +300,7 @@ async def import_folder(
                 artifact.parse_message = str(dup_exc)
                 artifact.processed_at = datetime.now(timezone.utc)
                 result.skipped += 1
+                await _commit_with_request_context(db, user_id)
                 continue
             tx_count = statement.transaction_count or 0
             if tx_count > 0:
@@ -323,21 +329,30 @@ async def import_folder(
                 "parser_used": statement.parser_used,
             }
             artifact.processed_at = datetime.now(timezone.utc)
+            await _commit_with_request_context(db, user_id)
         except Exception as exc:
-            if classified.doc_type == "unknown_pdf":
-                artifact.status = "skipped"
-                artifact.parse_message = (
-                    "Unknown PDF could not be parsed as statement. "
-                    f"Reason: {exc}"
-                )
-                artifact.processed_at = datetime.now(timezone.utc)
-                result.skipped += 1
-            else:
-                artifact.status = "failed"
-                artifact.parse_message = str(exc)
-                artifact.processed_at = datetime.now(timezone.utc)
+            await db.rollback()
+            await set_request_user_context(db, user_id=user_id)
+            if artifact is not None:
+                try:
+                    artifact.status = "skipped" if artifact.doc_type == "unknown_pdf" else "failed"
+                    artifact.parse_message = (
+                        "Unknown PDF could not be parsed as statement. "
+                        f"Reason: {exc}"
+                        if artifact.doc_type == "unknown_pdf"
+                        else str(exc)
+                    )
+                    artifact.processed_at = datetime.now(timezone.utc)
+                    db.add(artifact)
+                    await _commit_with_request_context(db, user_id)
+                except Exception:
+                    await db.rollback()
+                    await set_request_user_context(db, user_id=user_id)
+            if artifact is None or artifact.doc_type != "unknown_pdf":
                 result.failed += 1
                 result.messages.append(f"{path.name}: {exc}")
+            else:
+                result.skipped += 1
 
     if parse_supported and not dry_run and result.parsed > 0:
         auto = await reclassify_transfer_payments_for_user(
@@ -348,6 +363,7 @@ async def import_folder(
             max_gap_days=7,
             use_llm=True,
         )
+        await _commit_with_request_context(db, user_id)
         result.messages.append(
             "Auto-reclassify completed: "
             f"updated={auto.updated}, card_pairs={auto.matched_credit_card_pairs}, "
@@ -363,6 +379,11 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+async def _commit_with_request_context(db: AsyncSession, user_id: uuid.UUID) -> None:
+    await db.commit()
+    await set_request_user_context(db, user_id=user_id)
 
 
 def _password_for_path(path: str, password_map: dict[str, str] | None) -> str | None:

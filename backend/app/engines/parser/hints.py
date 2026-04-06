@@ -180,7 +180,14 @@ def statement_keyword_tokens(text: str, *, limit: int = 80) -> set[str]:
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join(text.lower().replace("_", " ").replace("-", " ").split())
+    return " ".join(
+        text.lower()
+        .replace("_", " ")
+        .replace("-", " ")
+        .replace("/", " ")
+        .replace("\\", " ")
+        .split()
+    )
 
 
 _STOPWORDS = {
