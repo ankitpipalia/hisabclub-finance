@@ -57,6 +57,10 @@ jobs:
         timeout-minutes: 12
         run: npm ci
 
+      - name: Validate Expo dependency graph
+        timeout-minutes: 5
+        run: npx expo-doctor
+
       - name: Generate Android native project
         timeout-minutes: 8
         run: npx expo prebuild --platform android --no-install --clean
@@ -92,7 +96,7 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         timeout-minutes: 5
         with:
-          xcode-version: "16.1"
+          xcode-version: "16.2"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -105,6 +109,10 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 12
         run: npm ci
+
+      - name: Validate Expo dependency graph
+        timeout-minutes: 5
+        run: npx expo-doctor
 
       - name: Generate iOS native project
         timeout-minutes: 8
