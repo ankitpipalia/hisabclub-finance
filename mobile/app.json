@@ -38,7 +38,8 @@
         }
       ],
       "expo-sharing",
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-font"
     ],
     "platforms": [
       "android",
