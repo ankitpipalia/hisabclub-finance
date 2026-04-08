@@ -11,7 +11,7 @@ on:
       - ".github/workflows/mobile-build-artifacts.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: mobile-build-${{ github.ref }}
@@ -149,3 +149,65 @@ jobs:
           name: hisabclub-ios-simulator-app-${{ github.sha }}
           path: mobile/hisabclub-ios-simulator-app.zip
           if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - android-apk
+      - ios-simulator-app
+    if: ${{ needs.android-apk.result == 'success' && needs.ios-simulator-app.result == 'success' && (github.ref_name == 'main' || github.ref_name == 'master') }}
+    steps:
+      - name: Download Android artifact
+        uses: actions/download-artifact@v8.0.1
+        timeout-minutes: 5
+        with:
+          name: hisabclub-android-debug-apk-${{ github.sha }}
+          path: release-assets/android
+
+      - name: Download iOS artifact
+        uses: actions/download-artifact@v8.0.1
+        timeout-minutes: 5
+        with:
+          name: hisabclub-ios-simulator-app-${{ github.sha }}
+          path: release-assets/ios
+
+      - name: Create or update release
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${SHA::7}"
+          TAG="mobile-build-${SHORT_SHA}"
+          TITLE="Mobile Build ${SHORT_SHA}"
+          ANDROID_FILE="$(find release-assets/android -type f -name '*.apk' -print -quit)"
+          IOS_FILE="$(find release-assets/ios -type f -name '*.zip' -print -quit)"
+          NOTES_FILE="$(mktemp)"
+
+          cat > "$NOTES_FILE" <<EOF
+          Automated mobile build for commit \`${SHA}\`.
+
+          - Run: https://github.com/${REPO}/actions/runs/${RUN_ID}
+          - Android asset: \`hisabclub-android-debug-${SHORT_SHA}.apk\`
+          - iOS asset: \`hisabclub-ios-simulator-app-${SHORT_SHA}.zip\`
+          EOF
+
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE" \
+              --target "$SHA" \
+              --prerelease
+          fi
+
+          gh release upload "$TAG" \
+            "${ANDROID_FILE}#hisabclub-android-debug-${SHORT_SHA}.apk" \
+            "${IOS_FILE}#hisabclub-ios-simulator-app-${SHORT_SHA}.zip" \
+            --repo "$REPO" \
+            --clobber
