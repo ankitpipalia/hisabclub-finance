@@ -6,6 +6,7 @@ import { ActivityIndicator, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './auth/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ToastProvider } from './components/ui/Toast';
 import RootNavigator from './navigation/RootNavigator';
 import { AppThemeProvider, useAppTheme } from './theme/AppThemeProvider';
 
@@ -35,12 +36,14 @@ function AppShell() {
 
   return (
     <PaperProvider theme={paperTheme}>
-      <AuthProvider>
-        <NavigationContainer theme={navigationTheme}>
-          <StatusBar style={isDark ? 'light' : 'dark'} />
-          <RootNavigator />
-        </NavigationContainer>
-      </AuthProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <NavigationContainer theme={navigationTheme}>
+            <StatusBar style={isDark ? 'light' : 'dark'} />
+            <RootNavigator />
+          </NavigationContainer>
+        </AuthProvider>
+      </ToastProvider>
     </PaperProvider>
   );
 }

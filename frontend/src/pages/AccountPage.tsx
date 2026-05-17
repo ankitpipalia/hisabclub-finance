@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { api } from '../api/client';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { useToast } from '../components/ui/Toast';
 
 type Me = {
   id: string;
@@ -22,6 +24,8 @@ export default function AccountPage() {
   const [wiping, setWiping] = useState(false);
   const [wipeError, setWipeError] = useState('');
   const [wipeMessage, setWipeMessage] = useState('');
+  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     let active = true;
@@ -88,20 +92,23 @@ export default function AccountPage() {
       setWipeError('Type "CLEAR MY DATA" to confirm.');
       return;
     }
-    if (!window.confirm('This will permanently delete all your transactions, statements, PDFs, and local LLM memory. Continue?')) {
-      return;
-    }
+    setWipeConfirmOpen(true);
+  };
 
+  const runWipe = async () => {
+    setWipeConfirmOpen(false);
     setWiping(true);
     try {
       const response = await api.clearMyData(wipePassword, wipeConfirmation);
-      setWipeMessage(
-        `${response.message} Rows deleted: ${Object.values(response.deleted_rows).reduce((acc, n) => acc + n, 0)}. Files deleted: ${response.deleted_files}.`,
-      );
+      const summary = `${response.message} Rows deleted: ${Object.values(response.deleted_rows).reduce((acc, n) => acc + n, 0)}. Files deleted: ${response.deleted_files}.`;
+      setWipeMessage(summary);
+      toast.success('Your data has been cleared.');
       setWipePassword('');
       setWipeConfirmation('');
     } catch (err: unknown) {
-      setWipeError(err instanceof Error ? err.message : 'Could not clear user data.');
+      const message = err instanceof Error ? err.message : 'Could not clear user data.';
+      setWipeError(message);
+      toast.error(message);
     } finally {
       setWiping(false);
     }
@@ -109,6 +116,16 @@ export default function AccountPage() {
 
   return (
     <div className="hc-page">
+      <ConfirmDialog
+        open={wipeConfirmOpen}
+        title="Permanently delete all your data?"
+        description="This removes every transaction, statement, PDF, and local LLM memory tied to your account. There is no undo."
+        confirmLabel="Yes, wipe everything"
+        cancelLabel="Cancel"
+        variant="destructive"
+        onConfirm={() => void runWipe()}
+        onCancel={() => setWipeConfirmOpen(false)}
+      />
       <section className="hc-stagger">
         <p className="hc-kicker">Account</p>
         <h1 className="hc-page-title" style={{ maxWidth: '11ch' }}>

@@ -3,9 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { FileText, Calendar, CreditCard } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { ReviewTask, Statement, StatementIntegrityResponse } from '../api/client';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { SkeletonPanel } from '../components/ui/Skeleton';
+import { useToast } from '../components/ui/Toast';
 
 export default function StatementsPage() {
   const navigate = useNavigate();
+  const toast = useToast();
   const [statements, setStatements] = useState<Statement[]>([]);
   const [integrityById, setIntegrityById] = useState<Record<string, StatementIntegrityResponse>>({});
   const [loading, setLoading] = useState(true);
@@ -15,6 +19,7 @@ export default function StatementsPage() {
   const [resolvingTaskId, setResolvingTaskId] = useState<string | null>(null);
   const [reviewTaskByStatement, setReviewTaskByStatement] = useState<Record<string, ReviewTask>>({});
   const [actionError, setActionError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Statement | null>(null);
 
   useEffect(() => {
     void refreshStatements();
@@ -111,10 +116,14 @@ export default function StatementsPage() {
     }
   };
 
-  const handleDelete = async (statement: Statement) => {
-    if (!window.confirm(`Delete ${statement.bank_name} statement and remove its local LLM memory?`)) {
-      return;
-    }
+  const requestDelete = (statement: Statement) => {
+    setDeleteTarget(statement);
+  };
+
+  const confirmDelete = async () => {
+    const statement = deleteTarget;
+    if (!statement) return;
+    setDeleteTarget(null);
     try {
       setActionError(null);
       setDeletingId(statement.id);
@@ -125,10 +134,12 @@ export default function StatementsPage() {
         delete next[statement.id];
         return next;
       });
+      toast.success(`Deleted ${statement.bank_name} statement.`);
     } catch (err) {
       const message =
         err instanceof ApiError || err instanceof Error ? err.message : 'Delete failed.';
       setActionError(message);
+      toast.error(message);
     } finally {
       setDeletingId(null);
     }
@@ -153,13 +164,28 @@ export default function StatementsPage() {
   if (loading) {
     return (
       <div className="hc-page">
-        <div className="hc-panel">Loading statements...</div>
+        <div className="hc-panel">
+          <SkeletonPanel rows={5} rowHeight={22} />
+        </div>
       </div>
     );
   }
 
   return (
     <div className="hc-page">
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete statement?"
+        description={
+          deleteTarget
+            ? `This permanently removes the ${deleteTarget.bank_name} statement and its local LLM memory.`
+            : ''
+        }
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setDeleteTarget(null)}
+      />
       <header className="hc-page-header">
         <div>
           <p className="hc-kicker">Source Documents</p>
@@ -270,7 +296,7 @@ export default function StatementsPage() {
                 </button>
                 <button
                   className="hc-btn hc-btn-ghost"
-                  onClick={() => handleDelete(stmt)}
+                  onClick={() => requestDelete(stmt)}
                   disabled={deletingId === stmt.id || reviewingId === stmt.id}
                   style={{ color: 'var(--hc-accent)' }}
                 >
