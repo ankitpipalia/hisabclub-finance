@@ -3,6 +3,26 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class AnomalyTransaction(BaseModel):
+    transaction_id: str
+    transaction_date: date
+    amount: str
+    merchant: str
+    category_id: str | None = None
+    category_name: str | None = None
+    bank_name: str | None = None
+    reason: str  # "category_spike" | "new_large_merchant"
+    detail: str
+    expected_mean: str | None = None
+    expected_max: str | None = None
+    deviation_ratio: float | None = None
+
+
+class AnomalyResponse(BaseModel):
+    items: list[AnomalyTransaction]
+    total: int
+
+
 class MonthlySummaryResponse(BaseModel):
     id: str
     year_month: str

@@ -3,6 +3,7 @@ from datetime import date
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.dependencies import CurrentUser, DbSession
+from app.engines.insights.anomaly_detector import find_recent_anomalies
 from app.engines.insights.monthly_summary import compute_monthly_summary
 from app.engines.insights.reconciliation import build_transfer_reconciliation
 from app.engines.insights.recurring_detector import detect_recurring_transactions
@@ -10,6 +11,8 @@ from app.engines.insights.tax_compliance import build_tax_compliance_report
 from app.engines.insights.trend_analyzer import get_spending_trends
 from app.models.insights import MonthlySummary
 from app.schemas.insights import (
+    AnomalyResponse,
+    AnomalyTransaction,
     MonthlySummaryResponse,
     RecomputeResponse,
     ReconciliationResponse,
@@ -100,6 +103,36 @@ async def get_trends(
             for d in trend_data
         ],
     )
+
+
+@router.get("/anomalies", response_model=AnomalyResponse)
+async def get_anomalies(
+    user: CurrentUser,
+    db: DbSession,
+    window_days: int = Query(default=30, ge=1, le=180),
+    history_days: int = Query(default=90, ge=14, le=720),
+    sigma: float = Query(default=2.0, ge=1.0, le=5.0),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Detect anomalous spend in the last `window_days`.
+
+    Two detectors run:
+      - category_spike: amount > mean + sigma * stddev for that category
+      - new_large_merchant: first-ever spend with this merchant_normalized
+        above a fixed floor
+
+    No LLM, no background job — runs on-request.
+    """
+    findings = await find_recent_anomalies(
+        db,
+        user.id,
+        window_days=window_days,
+        history_days=history_days,
+        sigma=sigma,
+        limit=limit,
+    )
+    items = [AnomalyTransaction(**f.to_dict()) for f in findings]
+    return AnomalyResponse(items=items, total=len(items))
 
 
 @router.get("/recurring", response_model=list[RecurringPatternResponse])
