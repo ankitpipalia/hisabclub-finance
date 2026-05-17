@@ -46,3 +46,17 @@ class TaxPortalUploadResponse(BaseModel):
     financial_year: str | None = None
     message: str
 
+
+class TaxPlanningSectionResponse(BaseModel):
+    section: str
+    label: str
+    ytd_amount: str
+    limit: str
+    remaining: str | None = None
+    progress_pct: float | None = None
+
+
+class TaxPlanningResponse(BaseModel):
+    financial_year: str
+    sections: list[TaxPlanningSectionResponse] = Field(default_factory=list)
+

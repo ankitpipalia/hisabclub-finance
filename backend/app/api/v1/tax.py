@@ -20,10 +20,13 @@ from app.engines.parser.pdf_utils import extract_text as extract_pdf_text
 from app.engines.tax.ais_parser import parse_ais_document
 from app.engines.tax.form16_parser import parse_form16_document
 from app.engines.tax.form_26as_parser import parse_form_26as_document
+from app.engines.insights.tax_planning import compute_tax_planning_summary
 from app.engines.tax.verification import cross_verify_tax
 from app.models.document_artifact import DocumentArtifact
 from app.models.tax_portal_data import TaxPortalData
 from app.schemas.tax import (
+    TaxPlanningResponse,
+    TaxPlanningSectionResponse,
     TaxPortalDataResponse,
     TaxPortalUploadResponse,
     TaxVerificationCheck,
@@ -256,3 +259,40 @@ async def list_tax_portal_data(financial_year: str, user: CurrentUser, db: DbSes
 async def list_tax_discrepancies(financial_year: str, user: CurrentUser, db: DbSession):
     result = await cross_verify_tax(db, user_id=user.id, financial_year=financial_year)
     return [TaxVerificationCheck(**check) for check in result["discrepancies"]]
+
+
+@router.get("/planning/{financial_year}", response_model=TaxPlanningResponse)
+async def get_tax_planning(
+    financial_year: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """YTD deduction-section tracking against statutory limits.
+
+    Rule-based on category/merchant names — designed to surface "you've used
+    67% of your 80C limit; ₹50k remaining" in real time so users plan during
+    the financial year, not at filing time.
+    """
+    try:
+        sections = await compute_tax_planning_summary(
+            db, user_id=user.id, financial_year=financial_year,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return TaxPlanningResponse(
+        financial_year=financial_year,
+        sections=[
+            TaxPlanningSectionResponse(
+                section=s.section,
+                label=s.label,
+                ytd_amount=str(s.ytd_amount),
+                limit=str(s.limit),
+                remaining=str(s.remaining) if s.remaining is not None else None,
+                progress_pct=s.progress_pct,
+            )
+            for s in sections
+        ],
+    )
