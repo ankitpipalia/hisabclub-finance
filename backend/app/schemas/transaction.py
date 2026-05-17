@@ -120,3 +120,22 @@ class UpiReconcileResponse(BaseModel):
     scanned: int
     matched_pairs: int
     updated_transactions: int
+
+
+class TransactionSearchHit(BaseModel):
+    transaction_id: str
+    transaction_date: str
+    amount: str
+    direction: str
+    merchant: str
+    category_name: str | None = None
+    bank_name: str | None = None
+    account_masked: str | None = None
+    score: float
+    matched_terms: list[str]
+
+
+class TransactionSearchResponse(BaseModel):
+    query: str
+    items: list[TransactionSearchHit]
+    total: int

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.dependencies import CurrentUser, DbSession
+from app.engines.insights.transaction_search import search_transactions
 from app.engines.ledger.account_labels import bank_account_label
 from app.engines.ledger.category_enrichment import infer_uncategorized_category
 from app.engines.ledger.transfer_reclassifier import reclassify_transfer_payments_for_user
@@ -24,6 +25,8 @@ from app.schemas.transaction import (
     TransactionListResponse,
     TransactionOverrideResponse,
     TransactionResponse,
+    TransactionSearchHit,
+    TransactionSearchResponse,
     TransactionSourceResponse,
     TransactionSplitRequest,
     TransactionSplitResponse,
@@ -294,6 +297,27 @@ async def list_transactions(
         total=total,
         page=page,
         per_page=per_page,
+    )
+
+
+@router.get("/search", response_model=TransactionSearchResponse)
+async def search_transactions_endpoint(
+    q: str,
+    user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=25, ge=1, le=100),
+):
+    """Ranked semantic-ish search across the user's own transactions.
+
+    Token-weighted match over merchant_normalized / merchant_raw / notes /
+    bank_name with an exact-phrase bonus. No embedding model and no network —
+    all matching runs inside Postgres + Python on the user's host.
+    """
+    hits = await search_transactions(db, user.id, q, limit=limit)
+    return TransactionSearchResponse(
+        query=q,
+        items=[TransactionSearchHit(**h.to_dict()) for h in hits],
+        total=len(hits),
     )
 
 
