@@ -1,16 +1,18 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { Button, Card, TextInput, ActivityIndicator } from 'react-native-paper';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/client';
 import type { AccountInstitutionGroup, Institution } from '../api/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
+import { useToast } from '../components/ui/Toast';
 import { formatAmount } from '../utils/formatters';
 
 export default function AccountsScreen() {
   const queryClient = useQueryClient();
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const toast = useToast();
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({
     institution_name: '',
@@ -42,8 +44,9 @@ export default function AccountsScreen() {
       setForm((current) => ({ ...current, account_number_masked: '', nickname: '' }));
       await queryClient.invalidateQueries({ queryKey: ['accounts-tree'] });
       await queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      toast.success('Account created.');
     } catch (err: any) {
-      Alert.alert('Create account failed', err?.message || 'Could not create account');
+      toast.error(err?.message || 'Could not create account');
     }
   };
 

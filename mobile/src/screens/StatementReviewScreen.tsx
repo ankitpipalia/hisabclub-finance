@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { ActivityIndicator, Button, Card, Chip, TextInput } from 'react-native-paper';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RouteProp, useRoute } from '@react-navigation/native';
@@ -8,6 +8,7 @@ import * as api from '../api/client';
 import type { RootStackParamList } from '../navigation/types';
 import type { StatementReviewTransaction } from '../api/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
+import { useToast } from '../components/ui/Toast';
 import { formatAmount } from '../utils/formatters';
 
 type ReviewRoute = RouteProp<RootStackParamList, 'StatementReview'>;
@@ -17,6 +18,7 @@ export default function StatementReviewScreen() {
   const queryClient = useQueryClient();
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const toast = useToast();
   const [selectedTxnId, setSelectedTxnId] = useState<string | null>(null);
   const [annotationType, setAnnotationType] = useState('comment');
   const [annotationText, setAnnotationText] = useState('');
@@ -39,8 +41,9 @@ export default function StatementReviewScreen() {
     try {
       await api.verifyStatementTransaction(route.params.statementId, txnId);
       await refresh();
+      toast.success('Transaction verified.');
     } catch (err: any) {
-      Alert.alert('Verify failed', err?.message || 'Could not verify transaction');
+      toast.error(err?.message || 'Could not verify transaction');
     } finally {
       setBusy(false);
     }
@@ -51,8 +54,9 @@ export default function StatementReviewScreen() {
     try {
       await api.bulkVerifyStatement(route.params.statementId);
       await refresh();
+      toast.success('Statement bulk-verified.');
     } catch (err: any) {
-      Alert.alert('Bulk verify failed', err?.message || 'Could not verify statement');
+      toast.error(err?.message || 'Could not verify statement');
     } finally {
       setBusy(false);
     }
@@ -70,8 +74,9 @@ export default function StatementReviewScreen() {
       setAnnotationText('');
       setPageNumber('');
       await refresh();
+      toast.success('Note saved.');
     } catch (err: any) {
-      Alert.alert('Annotation failed', err?.message || 'Could not save note');
+      toast.error(err?.message || 'Could not save note');
     } finally {
       setBusy(false);
     }
@@ -86,7 +91,7 @@ export default function StatementReviewScreen() {
       );
       const available = await Sharing.isAvailableAsync();
       if (!available) {
-        Alert.alert('Open PDF unavailable', 'Sharing/opening files is not available on this device.');
+        toast.warning('Sharing not available on this device.');
         return;
       }
       await Sharing.shareAsync(uri, {
@@ -94,7 +99,7 @@ export default function StatementReviewScreen() {
         dialogTitle: 'Open statement PDF',
       });
     } catch (err: any) {
-      Alert.alert('Open PDF failed', err?.message || 'Could not open statement PDF');
+      toast.error(err?.message || 'Could not open statement PDF');
     } finally {
       setBusy(false);
     }
