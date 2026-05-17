@@ -20,6 +20,7 @@ from app.api.v1 import (
     subscriptions,
     tax,
     transactions,
+    transfers,
     upload,
 )
 
@@ -45,3 +46,4 @@ api_router.include_router(gmail.router, prefix="/gmail", tags=["gmail"])
 api_router.include_router(imports.router, prefix="/imports", tags=["imports"])
 api_router.include_router(reviews.router, prefix="/reviews", tags=["reviews"])
 api_router.include_router(tax.router, prefix="/tax", tags=["tax"])
+api_router.include_router(transfers.router, prefix="/transfers", tags=["transfers"])
