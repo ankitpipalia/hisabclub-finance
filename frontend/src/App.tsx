@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { api } from './api/client';
+import { ToastProvider } from './components/ui/Toast';
 
 const Layout = lazy(() => import('./components/Layout'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
@@ -49,7 +50,8 @@ function PageFallback() {
 export default function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={<PageFallback />}>
+      <ToastProvider>
+        <Suspense fallback={<PageFallback />}>
         <Routes>
           <Route path="/login" element={<LoginRoute />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
@@ -84,6 +86,7 @@ export default function App() {
           <Route path="*" element={<FallbackRoute />} />
         </Routes>
       </Suspense>
+      </ToastProvider>
     </BrowserRouter>
   );
 }

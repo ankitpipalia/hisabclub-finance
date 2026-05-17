@@ -10,6 +10,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { Transaction, Statement, MonthlySummary, TrendData, Bill } from '../api/client';
+import { AnomaliesPanel } from '../components/AnomaliesPanel';
 import {
   PieChart,
   Pie,
@@ -173,6 +174,10 @@ export default function DashboardPage() {
               </p>
               <p className="hc-stat-value">{statements.length}</p>
             </div>
+          </section>
+
+          <section className="hc-panel">
+            <AnomaliesPanel fetchAnomalies={() => api.getAnomalies({ limit: 10 })} />
           </section>
 
           {(categoryPieData.length > 0 || trendBarData.length > 0) && (
