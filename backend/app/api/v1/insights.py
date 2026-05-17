@@ -6,6 +6,7 @@ from app.dependencies import CurrentUser, DbSession
 from app.engines.insights.anomaly_detector import find_recent_anomalies
 from app.engines.insights.monthly_summary import compute_monthly_summary
 from app.engines.insights.reconciliation import build_transfer_reconciliation
+from app.engines.insights.recurring_classifier import classify_recurring
 from app.engines.insights.recurring_detector import detect_recurring_transactions
 from app.engines.insights.tax_compliance import build_tax_compliance_report
 from app.engines.insights.trend_analyzer import get_spending_trends
@@ -167,6 +168,10 @@ async def get_recurring(user: CurrentUser, db: DbSession):
                 next_expected=p.next_expected,
                 is_active=p.is_active,
                 category_name=category_name,
+                kind=classify_recurring(
+                    p.description_pattern or merchant_name or "",
+                    category_name,
+                ),
             )
         )
 

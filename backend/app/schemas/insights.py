@@ -63,6 +63,9 @@ class RecurringPatternResponse(BaseModel):
     next_expected: date
     is_active: bool
     category_name: str | None = None
+    # Bucket label derived at response time — one of:
+    # rent / utility / emi / insurance / subscription / salary / investment / other.
+    kind: str = "other"
 
     model_config = ConfigDict(from_attributes=True)
 
