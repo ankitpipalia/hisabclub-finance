@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
-from sqlalchemy import literal, func, select
+from sqlalchemy import func, literal, select
 
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
@@ -24,9 +24,9 @@ from app.schemas.statement import (
     StatementAnnotationResponse,
     StatementIntegrityResponse,
     StatementListResponse,
+    StatementResponse,
     StatementReviewResponse,
     StatementReviewTransactionResponse,
-    StatementResponse,
 )
 
 router = APIRouter()
@@ -41,6 +41,10 @@ def _to_statement_response(
 ) -> StatementResponse:
     safe_reprocess_count = int(reprocess_count or 1)
     is_reprocess = source_type == "manual_reprocess"
+    typed_promotion = dict((statement.parse_errors or {}).get("typed_promotion") or {})
+    balance_walk = dict(
+        (statement.parse_errors or {}).get("validation", {}).get("balance_walk") or {}
+    )
 
     return StatementResponse(
         id=str(statement.id),
@@ -65,6 +69,16 @@ def _to_statement_response(
         promoted_row_count=statement.promoted_row_count,
         quarantined_row_count=statement.quarantined_row_count,
         yield_rate=statement.yield_rate,
+        balance_walk_passed=balance_walk.get("ok"),
+        balance_walk_delta=_safe_float(
+            balance_walk.get("gap") or typed_promotion.get("balance_walk_delta")
+        ),
+        total_extracted=int(statement.extracted_row_count or 0),
+        total_promoted=int(statement.promoted_row_count or 0),
+        total_duplicates=int(typed_promotion.get("duplicates") or 0),
+        total_in_review=int(
+            typed_promotion.get("in_review") or statement.quarantined_row_count or 0
+        ),
         source_type=source_type,
         is_reprocess=is_reprocess,
         reprocess_count=safe_reprocess_count,
@@ -72,11 +86,24 @@ def _to_statement_response(
     )
 
 
+def _safe_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _to_annotation_response(annotation: TransactionAnnotation) -> StatementAnnotationResponse:
     return StatementAnnotationResponse(
         id=str(annotation.id),
-        parsed_transaction_id=str(annotation.parsed_transaction_id) if annotation.parsed_transaction_id else None,
-        canonical_transaction_id=str(annotation.canonical_transaction_id) if annotation.canonical_transaction_id else None,
+        parsed_transaction_id=str(annotation.parsed_transaction_id)
+        if annotation.parsed_transaction_id
+        else None,
+        canonical_transaction_id=str(annotation.canonical_transaction_id)
+        if annotation.canonical_transaction_id
+        else None,
         statement_id=str(annotation.statement_id),
         annotation_type=annotation.annotation_type,
         content=annotation.content,
@@ -265,33 +292,57 @@ async def get_statement_review(statement_id: str, user: CurrentUser, db: DbSessi
     statement, pdf_id, pdf_filename, source_type, reprocess_count = row
 
     parsed_transactions = (
-        await db.execute(
-            select(ParsedTransaction)
-            .where(ParsedTransaction.statement_id == statement.id, ParsedTransaction.user_id == user.id)
-            .order_by(ParsedTransaction.transaction_date.asc(), ParsedTransaction.created_at.asc())
+        (
+            await db.execute(
+                select(ParsedTransaction)
+                .where(
+                    ParsedTransaction.statement_id == statement.id,
+                    ParsedTransaction.user_id == user.id,
+                )
+                .order_by(
+                    ParsedTransaction.transaction_date.asc(), ParsedTransaction.created_at.asc()
+                )
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     annotations = (
-        await db.execute(
-            select(TransactionAnnotation)
-            .where(TransactionAnnotation.statement_id == statement.id, TransactionAnnotation.user_id == user.id)
-            .order_by(TransactionAnnotation.created_at.asc())
+        (
+            await db.execute(
+                select(TransactionAnnotation)
+                .where(
+                    TransactionAnnotation.statement_id == statement.id,
+                    TransactionAnnotation.user_id == user.id,
+                )
+                .order_by(TransactionAnnotation.created_at.asc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     source_ids = [txn.id for txn in parsed_transactions]
     sources = []
     if source_ids:
         sources = (
-            await db.execute(
-                select(TransactionSource).where(TransactionSource.parsed_txn_id.in_(source_ids))
+            (
+                await db.execute(
+                    select(TransactionSource).where(TransactionSource.parsed_txn_id.in_(source_ids))
+                )
             )
-        ).scalars().all()
-    canonical_by_parsed = {str(source.parsed_txn_id): str(source.canonical_txn_id) for source in sources}
+            .scalars()
+            .all()
+        )
+    canonical_by_parsed = {
+        str(source.parsed_txn_id): str(source.canonical_txn_id) for source in sources
+    }
     annotations_by_parsed: dict[str, list[StatementAnnotationResponse]] = {}
     annotation_responses = [_to_annotation_response(annotation) for annotation in annotations]
     for annotation in annotation_responses:
         if annotation.parsed_transaction_id:
-            annotations_by_parsed.setdefault(annotation.parsed_transaction_id, []).append(annotation)
+            annotations_by_parsed.setdefault(annotation.parsed_transaction_id, []).append(
+                annotation
+            )
 
     transaction_items = [
         StatementReviewTransactionResponse(
@@ -356,7 +407,9 @@ async def annotate_statement_transaction(
         )
     ).scalar_one_or_none()
     if parsed is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parsed transaction not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Parsed transaction not found."
+        )
 
     llm_response = None
     actions_json = None
@@ -379,7 +432,9 @@ async def annotate_statement_transaction(
             "proposed_count": result.proposed_count,
             "applied_count": result.applied_count,
         }
-        annotation_status = "applied" if request.apply_changes and result.applied_count > 0 else "pending"
+        annotation_status = (
+            "applied" if request.apply_changes and result.applied_count > 0 else "pending"
+        )
 
     annotation = TransactionAnnotation(
         user_id=user.id,
@@ -398,7 +453,9 @@ async def annotate_statement_transaction(
 
 
 @router.post("/{statement_id}/transactions/{txn_id}/verify", response_model=MessageResponse)
-async def verify_statement_transaction(statement_id: str, txn_id: str, user: CurrentUser, db: DbSession):
+async def verify_statement_transaction(
+    statement_id: str, txn_id: str, user: CurrentUser, db: DbSession
+):
     parsed = (
         await db.execute(
             select(ParsedTransaction)
@@ -429,13 +486,17 @@ async def bulk_verify_statement(statement_id: str, user: CurrentUser, db: DbSess
     if statement is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     parsed_transactions = (
-        await db.execute(
-            select(ParsedTransaction).where(
-                ParsedTransaction.statement_id == statement.id,
-                ParsedTransaction.user_id == user.id,
+        (
+            await db.execute(
+                select(ParsedTransaction).where(
+                    ParsedTransaction.statement_id == statement.id,
+                    ParsedTransaction.user_id == user.id,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     now = datetime.now(timezone.utc)
     for parsed in parsed_transactions:
         parsed.reviewer_user_id = user.id
@@ -477,9 +538,7 @@ async def rereview_statement(statement_id: str, user: CurrentUser, db: DbSession
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     raw_pdf = (
-        await db.execute(
-            select(RawPdf).where(RawPdf.id == reparsed.pdf_id).limit(1)
-        )
+        await db.execute(select(RawPdf).where(RawPdf.id == reparsed.pdf_id).limit(1))
     ).scalar_one_or_none()
     reprocess_count = 1
     if raw_pdf is not None:
@@ -507,7 +566,9 @@ async def rereview_statement(statement_id: str, user: CurrentUser, db: DbSession
 async def delete_statement(statement_id: str, user: CurrentUser, db: DbSession):
     statement = (
         await db.execute(
-            select(Statement).where(Statement.id == statement_id, Statement.user_id == user.id).limit(1)
+            select(Statement)
+            .where(Statement.id == statement_id, Statement.user_id == user.id)
+            .limit(1)
         )
     ).scalar_one_or_none()
     if statement is None:

@@ -1,10 +1,9 @@
 """Validation helpers for extracted statement transactions."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.engines.parser.base import ExtractedTransaction
 
@@ -145,14 +144,7 @@ def _build_balance_walk_validation(
     expected_closing_balance = round(float(opening_balance) + credit_total - debit_total, 2)
     actual_closing_balance = round(float(closing_balance), 2)
     gap = round(abs(actual_closing_balance - expected_closing_balance), 2)
-    tolerance = round(
-        max(
-            10.0,
-            len(transactions) * 1.0,
-            abs(actual_closing_balance or expected_closing_balance) * 0.002,
-        ),
-        2,
-    )
+    tolerance = Decimal("1.00")
     return {
         "applied": True,
         "opening_balance": round(float(opening_balance), 2),
@@ -161,6 +153,6 @@ def _build_balance_walk_validation(
         "credit_total": credit_total,
         "expected_closing_balance": expected_closing_balance,
         "gap": gap,
-        "tolerance": tolerance,
-        "ok": gap <= tolerance,
+        "tolerance": float(tolerance),
+        "ok": gap <= float(tolerance),
     }

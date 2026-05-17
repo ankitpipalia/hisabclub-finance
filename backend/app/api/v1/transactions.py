@@ -1,5 +1,5 @@
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -12,21 +12,21 @@ from app.engines.ledger.upi_reconciliation import reconcile_upi_failures_for_use
 from app.models.canonical_transaction import CanonicalTransaction
 from app.models.category import Category
 from app.models.parsed_transaction import ParsedTransaction
-from app.models.transaction_split import TransactionSplit
 from app.models.transaction_source import TransactionSource
+from app.models.transaction_split import TransactionSplit
 from app.models.user_override import UserOverride
 from app.schemas.transaction import (
     AutoCategorizeResponse,
     ReclassifyTransferResponse,
-    TransactionDetailResponse,
     TransactionBulkUpdateRequest,
     TransactionBulkUpdateResponse,
+    TransactionDetailResponse,
     TransactionListResponse,
     TransactionOverrideResponse,
     TransactionResponse,
+    TransactionSourceResponse,
     TransactionSplitRequest,
     TransactionSplitResponse,
-    TransactionSourceResponse,
     TransactionUpdateRequest,
     UpiReconcileResponse,
 )
@@ -74,7 +74,10 @@ def _normalize_updates(request: TransactionUpdateRequest | TransactionBulkUpdate
     if "transaction_nature" in updates and updates["transaction_nature"] is not None:
         normalized_nature = str(updates["transaction_nature"]).strip().lower()
         if normalized_nature not in _ALLOWED_TRANSACTION_NATURES:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid transaction_nature.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid transaction_nature.",
+            )
         updates["transaction_nature"] = normalized_nature
     if "tags" in updates:
         updates["tags"] = _normalize_tags(updates["tags"])
@@ -83,7 +86,13 @@ def _normalize_updates(request: TransactionUpdateRequest | TransactionBulkUpdate
     return updates
 
 
-async def _apply_transaction_updates(db: DbSession, *, user_id, txn: CanonicalTransaction, updates: dict) -> None:
+async def _apply_transaction_updates(
+    db: DbSession,
+    *,
+    user_id,
+    txn: CanonicalTransaction,
+    updates: dict,
+) -> None:
     for field, new_value in updates.items():
         old_value = getattr(txn, field, None)
         if old_value == new_value:
@@ -443,7 +452,10 @@ async def bulk_update_transactions(
 ):
     txn_ids = [txn_id for txn_id in request.transaction_ids if txn_id]
     if not txn_ids:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="transaction_ids are required.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="transaction_ids are required.",
+        )
 
     updates = _normalize_updates(request)
     updates.pop("transaction_ids", None)
@@ -550,7 +562,9 @@ async def split_transaction(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Each split part needs a description.",
             )
-        transaction_nature = (part.transaction_nature or txn.transaction_nature or "expense").strip().lower()
+        transaction_nature = (
+            part.transaction_nature or txn.transaction_nature or "expense"
+        ).strip().lower()
         if transaction_nature not in _ALLOWED_TRANSACTION_NATURES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -574,6 +588,19 @@ async def split_transaction(
             bank_name=txn.bank_name,
             account_type=txn.account_type,
             dedupe_fingerprint=None,
+            extraction_source="split",
+            extraction_confidence=1.0,
+            source_statement_id=getattr(txn, "source_statement_id", None),
+            source_page_number=getattr(txn, "source_page_number", None),
+            source_char_offset=getattr(txn, "source_char_offset", None),
+            source_evidence={
+                "path": "transaction_split",
+                "source_canonical_txn_id": str(txn.id),
+                "split_index": str(index),
+            },
+            validation_status="valid",
+            validation_errors=None,
+            balance_walk_passed=getattr(txn, "balance_walk_passed", None),
             foreign_amount=None,
             foreign_currency=None,
             is_recurring=False,
@@ -623,7 +650,9 @@ async def split_transaction(
 
     return TransactionSplitResponse(
         original_transaction=_txn_to_response(original_row[0], category_name=original_row[1]),
-        created_transactions=[_txn_to_response(row[0], category_name=row[1]) for row in created_rows],
+        created_transactions=[
+            _txn_to_response(row[0], category_name=row[1]) for row in created_rows
+        ],
     )
 
 

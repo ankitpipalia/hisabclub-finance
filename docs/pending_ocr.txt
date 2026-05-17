@@ -1,0 +1,2 @@
+No image-only PDFs were found in /home/ankit/Documents/FY24-25-Ankit-details during the Phase 3 probe.
+Raw probe report: /tmp/fy2425_probe_report.json

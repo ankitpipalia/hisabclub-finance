@@ -66,3 +66,34 @@ def test_validate_extracted_statement_balance_walk_flags_review() -> None:
     assert result.review_required is True
     assert result.details["balance_walk"]["ok"] is False
     assert result.details["balance_walk"]["gap"] == 500.0
+
+
+def test_balance_walk_strict_tolerance() -> None:
+    statement = ExtractedStatement(
+        bank_name="HDFC",
+        account_type="savings",
+        opening_balance=1000.0,
+        closing_balance=1000.5,
+        transactions=[
+            ExtractedTransaction(
+                transaction_date=date(2025, 4, 2),
+                posting_date=None,
+                description="SALARY",
+                amount=500.0,
+                direction="credit",
+            ),
+            ExtractedTransaction(
+                transaction_date=date(2025, 4, 4),
+                posting_date=None,
+                description="ATM",
+                amount=500.0,
+                direction="debit",
+            ),
+        ],
+    )
+
+    result = validate_extracted_statement(statement)
+
+    assert result.details["balance_walk"]["ok"] is True
+    assert result.details["balance_walk"]["gap"] == 0.5
+    assert result.details["balance_walk"]["tolerance"] == 1.0

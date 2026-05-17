@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import async_session_factory
 from app.engines.insights.statement_integrity import build_credit_card_statement_integrity
+from app.engines.jobs.parser_state import ParserStage, record_parser_stage
 from app.engines.jobs.service import (
     claim_next_job,
     complete_job,
@@ -84,6 +85,13 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
         )
         return
 
+    await record_parser_stage(
+        db=db,
+        job=job,
+        stage=ParserStage.DECRYPTING,
+        raw_pdf_id=str(raw_pdf.id),
+    )
+
     resolved_path = _resolve_storage_path(raw_pdf.storage_path)
     if not resolved_path or not os.path.exists(resolved_path):
         await fail_or_retry_job(
@@ -129,6 +137,14 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
             )
             return
 
+    await record_parser_stage(
+        db=db,
+        job=job,
+        stage=ParserStage.EXTRACTING,
+        bank_hint=str(bank_hint) if bank_hint else None,
+        account_type_hint=str(account_type_hint) if account_type_hint else None,
+    )
+
     try:
         statement = await parse_statement(
             db=db,
@@ -172,6 +188,39 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
             dlq_reason="parse_failed",
         )
         return
+
+    parse_errors = statement.parse_errors or {}
+    typed_promotion = dict(parse_errors.get("typed_promotion") or {})
+    await record_parser_stage(
+        db=db,
+        job=job,
+        stage=ParserStage.VALIDATING,
+        statement_id=str(statement.id),
+        extracted=statement.extracted_row_count or 0,
+        invalid=typed_promotion.get("invalid", 0),
+    )
+    await record_parser_stage(
+        db=db,
+        job=job,
+        stage=ParserStage.DEDUPING,
+        statement_id=str(statement.id),
+        duplicates=typed_promotion.get("duplicates", 0),
+    )
+    await record_parser_stage(
+        db=db,
+        job=job,
+        stage=ParserStage.BALANCE_CHECK,
+        statement_id=str(statement.id),
+        balance_walk_passed=typed_promotion.get("balance_walk_passed"),
+        balance_walk_delta=typed_promotion.get("balance_walk_delta"),
+    )
+    await record_parser_stage(
+        db=db,
+        job=job,
+        stage=ParserStage.REVIEW_GATE,
+        statement_id=str(statement.id),
+        in_review=typed_promotion.get("in_review", statement.quarantined_row_count or 0),
+    )
 
     if (statement.transaction_count or 0) > 0:
         await reclassify_transfer_payments_for_user(
@@ -435,7 +484,10 @@ def _apply_post_parse_gates(
         yield_rate_ok = True
 
     integrity_ok = True
-    if statement.account_type == "credit_card" and settings.require_cc_integrity_ok_for_auto_promotion:
+    if (
+        statement.account_type == "credit_card"
+        and settings.require_cc_integrity_ok_for_auto_promotion
+    ):
         integrity_status = (integrity or {}).get("status")
         integrity_ok = integrity_status in {"ok", "pass"}
 

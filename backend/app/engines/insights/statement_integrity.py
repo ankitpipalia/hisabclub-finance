@@ -71,9 +71,20 @@ def evaluate_credit_card_integrity(
         notes.append("No parsed transactions were found in this statement.")
     if due is None:
         notes.append("Statement total due is missing; due-amount cross-check skipped.")
+    elif prev is not None:
+        expected_due = round(prev + net_activity, 2)
+        due_gap_v2 = round(abs(due - expected_due), 2)
+        aligns_due_v2 = due_gap_v2 <= tolerance_due
+        if aligns_due_v2:
+            notes.append("Net activity vs total due (with previous balance) is consistent within tolerance.")
+        else:
+            notes.append(f"Net activity vs total due (with previous balance) mismatch is INR {due_gap_v2:,.2f}.")
+    else:
+        aligns_due_v2 = False
+        due_gap_v2 = None
     if aligns_due:
         notes.append("Net activity is consistent with total due within tolerance.")
-    elif due_gap is not None:
+    elif due_gap is not None and prev is None:
         notes.append(f"Net activity vs total due mismatch is INR {due_gap:,.2f}.")
 
     if close is None or prev is None:
@@ -86,7 +97,12 @@ def evaluate_credit_card_integrity(
     elif closing_gap is not None:
         notes.append(f"Balance-walk mismatch is INR {closing_gap:,.2f}.")
 
-    status = "ok" if transaction_count > 0 and (aligns_due or aligns_balance) else "review"
+    if prev is not None and aligns_due_v2:
+        status = "ok" if transaction_count > 0 else "review"
+    elif transaction_count > 0 and (aligns_due or aligns_balance):
+        status = "ok"
+    else:
+        status = "review"
     return StatementIntegrityEvaluation(
         status=status,
         debit_total=debit_total,

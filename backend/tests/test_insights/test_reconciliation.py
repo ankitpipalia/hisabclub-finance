@@ -39,3 +39,18 @@ def test_pair_transfer_candidates_matches_cross_bank_amounts() -> None:
     assert pairs[0]["credit"]["id"] == str(credit.id)
     assert len(unmatched) == 1
     assert unmatched[0].id == unmatched_debit.id
+
+
+def test_pair_transfer_candidates_deterministic_same_amount() -> None:
+    debit_a = _candidate(1000, "debit", date(2025, 3, 10), "HDFC", "savings")
+    debit_b = _candidate(1000, "debit", date(2025, 3, 12), "HDFC", "savings")
+    credit_a = _candidate(1000, "credit", date(2025, 3, 11), "AXIS", "credit_card")
+    credit_b = _candidate(1000, "credit", date(2025, 3, 13), "AXIS", "credit_card")
+
+    pairs, _ = pair_transfer_candidates([debit_a, debit_b, credit_a, credit_b], max_gap_days=5)
+
+    assert len(pairs) == 2
+    assert pairs[0]["debit"]["id"] == str(debit_a.id)
+    assert pairs[0]["credit"]["id"] == str(credit_a.id)
+    assert pairs[1]["debit"]["id"] == str(debit_b.id)
+    assert pairs[1]["credit"]["id"] == str(credit_b.id)

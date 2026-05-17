@@ -7,6 +7,7 @@ from sqlalchemy import asc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.jobs.notifier import publish_job_event
+from app.engines.jobs.parser_state import ParserStage, advance_stage
 from app.models.extraction_job import ExtractionJob
 
 
@@ -143,7 +144,7 @@ async def complete_job(
 ) -> None:
     now = _utcnow()
     job.status = "completed"
-    job.current_stage = "completed"
+    job.current_stage = ParserStage.COMPLETE.value
     job.statement_id = statement_id
     job.result_json = result
     job.finished_at = now
@@ -155,6 +156,12 @@ async def complete_job(
     await publish_job_event(
         "job.completed",
         {"job_id": str(job.id), "statement_id": str(statement_id) if statement_id else None},
+    )
+    await _best_effort_advance_stage(
+        str(job.id),
+        ParserStage.COMPLETE,
+        statement_id=str(statement_id) if statement_id else None,
+        result=result,
     )
 
 
@@ -175,7 +182,7 @@ async def fail_or_retry_job(
         job.next_run_at = now + timedelta(seconds=backoff_sec)
     else:
         job.status = "dlq"
-        job.current_stage = "dlq"
+        job.current_stage = ParserStage.FAILED.value
         job.finished_at = now
         job.dlq_reason = dlq_reason or "max_attempts_exceeded"
 
@@ -193,6 +200,14 @@ async def fail_or_retry_job(
             "status": job.status,
         },
     )
+    if job.status == "dlq":
+        await _best_effort_advance_stage(
+            str(job.id),
+            ParserStage.FAILED,
+            error_code=job.error_code,
+            error_message=job.error_message,
+            dlq_reason=job.dlq_reason,
+        )
 
 
 async def list_dlq_jobs(
@@ -228,3 +243,11 @@ async def requeue_dlq_job(
     await db.flush()
     await publish_job_event("job.requeued", {"job_id": str(job.id)})
     return job
+
+
+async def _best_effort_advance_stage(job_id: str, stage: ParserStage, **extra) -> None:
+    try:
+        await advance_stage(job_id, stage, **extra)
+    except Exception:
+        # Redis parser state is an observability/resume aid; DB job state remains authoritative.
+        return

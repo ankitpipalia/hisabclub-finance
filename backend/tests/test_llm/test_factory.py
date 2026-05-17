@@ -29,7 +29,7 @@ def test_resolve_target_for_task_uses_vision_endpoint_when_enabled(monkeypatch) 
 
 
 def test_resolve_target_for_task_uses_text_router_by_default(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "llm_base_url", "http://localhost:8472/v1")
+    monkeypatch.setattr(settings, "llm_base_url", "http://127.0.0.1:8097/v1")
     monkeypatch.setattr(settings, "llm_api_key", "")
     monkeypatch.setattr(settings, "llm_model", "base-model.gguf")
     monkeypatch.setattr(settings, "llm_small_model", "small-model.gguf")
@@ -42,7 +42,7 @@ def test_resolve_target_for_task_uses_text_router_by_default(monkeypatch) -> Non
     )
 
     assert target.mode == "text"
-    assert target.base_url == "http://localhost:8472/v1"
+    assert target.base_url == "http://127.0.0.1:8097/v1"
     assert target.model == "small-model.gguf"
 
 

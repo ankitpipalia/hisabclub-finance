@@ -17,14 +17,18 @@ A **privacy-first, self-hosted Indian personal finance ledger**. Users upload ba
 
 ## Current Supported Runtime
 
-This is the verified development/runtime topology as of 2026-04-07:
+This is the verified development/runtime topology as of 2026-04-09:
 
 - **Backend** runs on the host at `http://localhost:8356`
 - **Web frontend** is built to `frontend/dist` and served by the backend at `/`
 - **PostgreSQL** and **Redis** run in Docker
-- **Primary local LLM** now runs outside this repo from `/home/ankit/Documents/local-llm` at `http://localhost:8096/v1`
-  - active model: `Qwen3-VL-8B-Instruct-Q4_K_M.gguf`
-- **Legacy text endpoint on `:8472` is no longer the active application path**
+- **Shared local Qwen text LLM** now runs outside this repo from `/home/ankit/Documents/local-llm` at `http://127.0.0.1:8097/v1`
+  - active model: `Qwen3.6-27B-Q5_K_S.gguf`
+  - context: `196608`
+- **Optional shared local vision LLM** can run outside this repo from `/home/ankit/Documents/local-llm` at `http://127.0.0.1:8096/v1`
+  - active vision model: `Qwen3-VL-8B-Instruct-Q4_K_M.gguf`
+- **Current single-GPU development profile** keeps OCR/vision disabled by default because `Qwen3.6-27B-Q5_K_S.gguf` consumes most of the RTX A5000 24GB VRAM budget.
+- **Legacy text endpoint on `:8472` is no longer part of the supported application contract**
 - **Optional local OCR/vision endpoint** can run outside this repo from `/home/ankit/Documents/local-llm` at `http://localhost:8095/v1`
 - **Optional dedicated vision extraction endpoint** can be configured separately for page-image parsing (for example `Qwen3-VL-8B` served from a local OpenAI-compatible `/v1` endpoint)
 - **Local document knowledge** is stored in PostgreSQL and populated from uploads, folder intake, and backfill
@@ -52,7 +56,7 @@ The Docker `api` service is not the primary supported path right now. The suppor
 │   Web Frontend  │───▶│   FastAPI Backend    │◀───│ Shared Local LLM│
 │   React + Vite  │    │   Python 3.10       │    │  llama.cpp      │
 │   Built to dist │    │   Host runtime      │    │  Host runtime    │
-│   Served at /   │    │   Port 8356         │    │  Port 8096       │
+│   Served at /   │    │   Port 8356         │    │  Port 8097 text  │
 │   via backend   │    │   Serves API + SPA  │    └─────────────────┘
 └─────────────────┘    └──────────┬──────────┘
                                    │
@@ -83,7 +87,7 @@ The Docker `api` service is not the primary supported path right now. The suppor
 | **Mobile UI** | React Native Paper (Material Design 3) | 5.15 |
 | **Mobile State** | TanStack React Query | 5.94 |
 | **SMS Reader** | Custom Kotlin native module (ContentResolver) | - |
-| **LLM** | llama.cpp `Qwen3-VL-8B-Instruct` on `:8096` | - |
+| **LLM** | llama.cpp `Qwen3.6-27B-Q5_K_S` on `:8097`; optional Qwen3-VL on `:8096` | - |
 | **Containers** | Docker Compose | - |
 
 ---
@@ -212,7 +216,7 @@ The Docker `api` service is not the primary supported path right now. The suppor
   - disabled by default
   - intended for dedicated local models such as `Qwen3-VL-8B`
   - invoked before text-only fallback when enabled for hard/low-signal statements
-- Backend now also supports **primary** vision-led PDF-to-JSON extraction:
+- Backend supports **feature-flagged** vision-led PDF-to-JSON extraction:
   - enabled only when `LLM_VISION_STATEMENT_PRIMARY=true`
   - rendered statement pages are sent to the dedicated local vision route before template parsing
   - template/text extraction remain as fallback for resilience
@@ -221,7 +225,7 @@ The Docker `api` service is not the primary supported path right now. The suppor
   - artifacts and parsed statements become visible during long imports
   - request-scoped tenant context is re-applied after commit to satisfy RLS
   - knowledge ingestion now commits before the expensive statement parse begins, reducing long `idle in transaction` windows
-- Real-directory validation against `/home/ankit/Documents/FY24-25-Ankit-details` now confirms successful `Qwen3-VL` parsing for:
+- Earlier real-directory validation against `/home/ankit/Documents/FY24-25-Ankit-details` confirmed successful Qwen3-VL parsing for:
   - `0206-statement.pdf` -> `BOB savings`, `13` transactions
   - `ANKIT-HDFC-CC-STATEMENT.pdf` -> `HDFC credit_card`, `66` transactions
   - `9719-statement.pdf` -> `ICICI savings`, `186` transactions
@@ -714,21 +718,25 @@ The `android/` directory is regenerated. You MUST:
 
 ### Shared Local LLM Runtime
 ```bash
-cd /home/ankit/Documents/local-llm
-./llama-turbo-cuda.sh start
+bash /home/ankit/Documents/local-llm/shared-local-llm.sh start qwen
+bash /home/ankit/Documents/local-llm/shared-local-llm.sh status qwen
 ```
 
 ### Model Details
-- **File**: `/home/ankit/Documents/local-llm/models/unsloth-Qwen3-VL-8B-Instruct-GGUF/Qwen3-VL-8B-Instruct-Q4_K_M.gguf`
-- **Model**: Qwen3-VL-8B-Instruct, Q4_K_M quantization
+- **Shared config source**: `/home/ankit/Documents/local-llm/shared-local-llm.env`
+- **Text endpoint**: `http://127.0.0.1:8097/v1`
+- **Optional vision endpoint**: `http://127.0.0.1:8096/v1`
+- **Text model**: `Qwen3.6-27B-Q5_K_S.gguf`
+- **Vision model**: `Qwen3-VL-8B-Instruct-Q4_K_M.gguf`
 - **GPU**: NVIDIA RTX A5000 (24GB VRAM)
-- **Primary API**: OpenAI-compatible at `http://localhost:8096/v1`
+- **Primary text API**: OpenAI-compatible at `http://127.0.0.1:8097/v1`
+- **Optional vision API**: OpenAI-compatible at `http://127.0.0.1:8096/v1`
 - **OCR API**: OpenAI-compatible at `http://localhost:8095/v1`
 - **Ownership**: model runtime is managed in `/home/ankit/Documents/local-llm`, not in this repo
 
 ### LLM Usage in App
 - **Feature-flagged**: `LLM_ENABLED=true` in `.env`
-- **Primary statement extraction**: `Qwen3-VL` page-image parsing for supported PDF statement flows
+- **Primary statement extraction**: deterministic/template extraction first, with Qwen3.6 text fallback; Qwen3-VL page-image parsing is optional and feature-flagged
 - **Fallback for 0-transaction parsing**: deterministic/text fallback remains available when vision extraction is insufficient
 - **Merchant normalization**: Clean up messy raw merchant descriptions
 - **Category suggestion**: Pick best category from list
@@ -873,16 +881,26 @@ docker compose down                  # Stop
 
 ---
 
-## Verified State (2026-04-06)
+## Verified State (2026-04-27)
 
 - Backend health endpoint returns OK
-- Primary local vision LLM responds on `:8096`
-- Local OCR model responds on `:8095`
+- Primary local Qwen3.6 text LLM responds on `:8097`
+- Local OCR/vision models on `:8095`/`:8096` are optional in the current single-GPU profile
+- Typed extraction is now wired into canonical promotion:
+  - `canonical_transactions` has extraction audit columns, `dedup_key`, validation fields, balance-walk status, and review-task linkage
+  - parser output is adapted to `RawTransaction` and promoted through `promote_validated_batch`
+  - duplicate detection uses stable account/date/amount/description/direction hashes before canonical insert
+  - low-confidence, AI-sourced, large-amount, and balance-walk-failed transactions create `transaction_review` tasks
+- Parser jobs publish stage snapshots to Redis keys shaped as `parserjob:{job_id}` while DB `extraction_jobs.current_stage` remains authoritative
+- Synthetic PDF fixtures are generated from `backend/tests/fixtures/generate_fixtures.py`; no real finance data is committed
 - Frontend production build succeeds
-- Targeted backend tests for the new importer + vision stack pass: `12 passed`
+- Full backend tests pass: `169 passed`
+- Focused extraction/parser-state/LLM runtime tests pass: `41 passed`
+- Ruff checks pass for the touched backend modules/tests
+- Mobile TypeScript check passes
 - Seeded categories are available after login: `73`
 - Web frontend renders through the backend-served SPA
-- Real dataset validation succeeded for:
+- Earlier real dataset validation succeeded for:
   - `0206-statement.pdf` -> `BOB savings` -> `13` rows
   - `ANKIT-HDFC-CC-STATEMENT.pdf` -> `HDFC credit_card` -> `66` rows
   - `9719-statement.pdf` -> `ICICI savings` -> `186` rows

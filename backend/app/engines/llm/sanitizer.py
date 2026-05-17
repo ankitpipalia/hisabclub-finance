@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from app.config import settings
+
 _REFERENCE_CONTEXT_RE = re.compile(
     r"(?i)\b(?:upi|utr|rrn|imps|neft|rtgs|txn|txnid|ref|reference|trace|order|vpa)\b"
 )
@@ -52,9 +54,10 @@ def sanitize_for_llm(text: str) -> str:
         sanitized,
     )
 
-    # Indian phone numbers: +91, 0, or bare 10-digit
+    # Indian phone numbers: +91, 0, or bare 10-digit. Do not match inside
+    # longer transaction reference numbers.
     sanitized = re.sub(
-        r"(?:\+91[\s-]?|0)?[6-9]\d{9}\b", "XXXX_PHONE", sanitized
+        r"(?<!\d)(?:\+91[\s-]?|0)?[6-9]\d{9}\b", "XXXX_PHONE", sanitized
     )
 
     # Names after "Name:", "Dear", "Mr.", "Mrs.", "Ms."
@@ -74,11 +77,25 @@ def _mask_sensitive_numeric_id(match: re.Match[str]) -> str:
         return raw
 
     source = match.string
-    start = max(0, match.start() - 18)
-    end = min(len(source), match.end() + 18)
+    window_size = 40 if settings.sanitizer_preserve_short_refs else 18
+    start = max(0, match.start() - window_size)
+    end = min(len(source), match.end() + window_size)
     window = source[start:end]
 
+    if (
+        settings.sanitizer_preserve_short_refs
+        and len(digits) == 16
+        and _ACCOUNT_CONTEXT_RE.search(window)
+    ):
+        return "XXXX-XXXX-XXXX-XXXX"
+
     if _REFERENCE_CONTEXT_RE.search(window):
+        return raw
+
+    if settings.sanitizer_preserve_short_refs and _looks_like_standalone_reference(digits):
+        return raw
+
+    if settings.sanitizer_preserve_short_refs and len(digits) == 16:
         return raw
 
     if len(digits) >= 13:
@@ -88,3 +105,13 @@ def _mask_sensitive_numeric_id(match: re.Match[str]) -> str:
         return "XXXX_ACCT"
 
     return raw
+
+
+def _looks_like_standalone_reference(digits: str) -> bool:
+    if len(digits) != 12 or digits.startswith("0"):
+        return False
+    if len(set(digits)) == 1:
+        return False
+    if digits in "01234567890123456789" or digits in "98765432109876543210":
+        return False
+    return True

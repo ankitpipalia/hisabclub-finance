@@ -7,6 +7,8 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from sqlalchemy import desc, select
@@ -14,16 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.ledger.fingerprint import (
     build_statement_semantic_fingerprint,
-    build_transaction_dedupe_fingerprint,
 )
 from app.engines.parser.hints import (
     infer_account_type_hint_from_text,
     infer_bank_hint_from_text,
     normalize_parser_hints,
 )
-from app.models.parsed_transaction import ParsedTransaction
+from app.extraction.adapter import extracted_transaction_to_raw
+from app.extraction.models import StatementPeriod
+from app.extraction.promoter import promote_validated_batch
 from app.models.raw_pdf import RawPdf
-from app.models.review_task import ReviewTask
 from app.models.statement import Statement
 
 if TYPE_CHECKING:
@@ -75,6 +77,7 @@ class ExtractedStatement:
     transactions: list[ExtractedTransaction] = field(default_factory=list)
     parser_id: str = ""
     warnings: list[str] = field(default_factory=list)
+    llm_chunk_errors: dict[str, object] | None = None
 
 
 class StatementParser(ABC):
@@ -137,6 +140,7 @@ def detect_parser(
     for parser in _registry:
         if parser.detect(text):
             candidates.append(parser)
+    had_detected_candidates = bool(candidates)
 
     def _matches_account_type(parser: StatementParser) -> bool:
         if not account_type_hint or account_type_hint == "auto":
@@ -148,6 +152,8 @@ def detect_parser(
         return parser.account_type == account_type_hint
 
     if not candidates:
+        if had_detected_candidates and (strict_bank_hint or strict_account_type_hint):
+            return None
         if bank_hint:
             hinted = [p for p in _registry if p.bank_name.upper() == bank_hint.upper()]
             if hinted:
@@ -187,6 +193,8 @@ def detect_parser(
             candidates = []
 
     if not candidates:
+        if had_detected_candidates and (strict_bank_hint or strict_account_type_hint):
+            return None
         if bank_hint:
             hinted = [p for p in _registry if p.bank_name.upper() == bank_hint.upper()]
             if hinted:
@@ -219,6 +227,7 @@ def get_registered_parsers() -> list[StatementParser]:
 
 
 # ─── Orchestrator ──────────────────────────────────────
+
 
 async def parse_statement(
     db: AsyncSession,
@@ -298,8 +307,7 @@ async def parse_statement(
     text_bank_hint = infer_bank_hint_from_text(full_text)
     text_account_type_hint = infer_account_type_hint_from_text(full_text)
 
-    # Log first 500 chars for debugging
-    text_preview = full_text[:500].replace("\n", "\\n")
+    text_preview = _redacted_text_preview(full_text)
     logger.info(
         "PDF text extracted for pdf_id=%s: %d pages, %d chars. Preview: %s",
         pdf_id,
@@ -347,6 +355,12 @@ async def parse_statement(
                 primary_vision_statement.warnings.append(
                     "Primary PDF-to-JSON vision extraction route was used before template parsing."
                 )
+                if len(pages) > int(settings.llm_vision_page_limit):
+                    primary_vision_statement.warnings.append(
+                        f"Statement has {len(pages)} pages but vision page_limit is "
+                        f"{settings.llm_vision_page_limit}; later pages were not processed. "
+                        "Consider re-running with LLM text fallback for complete coverage."
+                    )
         except Exception as exc:
             logger.warning("Primary vision extraction failed for pdf_id=%s: %s", pdf_id, exc)
 
@@ -390,12 +404,18 @@ async def parse_statement(
                         account_type_hint = "bank_account"
 
     extracted: ExtractedStatement | None = primary_vision_statement
-    parser = None if extracted is not None else detect_parser(
-        full_text,
-        bank_hint,
-        account_type_hint,
-        strict_bank_hint=bool(user_bank_hint),
-        strict_account_type_hint=bool(user_account_type_hint and user_account_type_hint != "auto"),
+    parser = (
+        None
+        if extracted is not None
+        else detect_parser(
+            full_text,
+            bank_hint,
+            account_type_hint,
+            strict_bank_hint=bool(user_bank_hint),
+            strict_account_type_hint=bool(
+                user_account_type_hint and user_account_type_hint != "auto"
+            ),
+        )
     )
 
     if extracted is not None:
@@ -430,7 +450,8 @@ async def parse_statement(
             )
         else:
             logger.warning(
-                "Preferred LLM re-review produced no valid transactions for pdf_id=%s; falling back to parser detection.",
+                "Preferred LLM re-review produced no valid transactions for pdf_id=%s; "
+                "falling back to parser detection.",
                 pdf_id,
             )
             parser = detect_parser(
@@ -454,7 +475,9 @@ async def parse_statement(
             text_preview,
         )
         if settings.llm_enabled:
-            logger.info("No template parser matched; attempting direct LLM parse for pdf_id=%s", pdf_id)
+            logger.info(
+                "No template parser matched; attempting direct LLM parse for pdf_id=%s", pdf_id
+            )
             try:
                 from app.engines.llm.parse_fallback import llm_parse_statement
                 from app.engines.llm.vision_statement import llm_parse_statement_from_page_images
@@ -502,9 +525,8 @@ async def parse_statement(
                     f"Supported template formats: {', '.join(registered)}. "
                     "LLM fallback also could not extract transactions."
                 )
-            if (
-                bank_hint
-                and (not llm_result.bank_name or llm_result.bank_name.lower() == "unknown")
+            if bank_hint and (
+                not llm_result.bank_name or llm_result.bank_name.lower() == "unknown"
             ):
                 llm_result.bank_name = bank_hint.upper()
             if account_type_hint == "credit_card":
@@ -547,7 +569,8 @@ async def parse_statement(
             ) from exc
 
         logger.info(
-            "Parser %s extracted %d transactions for pdf_id=%s (metadata: period=%s..%s, account=%s)",
+            "Parser %s extracted %d transactions for pdf_id=%s "
+            "(metadata: period=%s..%s, account=%s)",
             parser.parser_id,
             len(extracted.transactions),
             pdf_id,
@@ -570,7 +593,9 @@ async def parse_statement(
                 logger.info("Attempting LLM fallback for pdf_id=%s", pdf_id)
                 try:
                     from app.engines.llm.parse_fallback import llm_parse_statement
-                    from app.engines.llm.vision_statement import llm_parse_statement_from_page_images
+                    from app.engines.llm.vision_statement import (
+                        llm_parse_statement_from_page_images,
+                    )
 
                     llm_result = None
                     if should_use_vision_for_statement_extraction(
@@ -618,7 +643,10 @@ async def parse_statement(
                         )
                         if not extracted.account_number_masked and llm_result.account_number_masked:
                             extracted.account_number_masked = llm_result.account_number_masked
-                        if not extracted.statement_period_start and llm_result.statement_period_start:
+                        if (
+                            not extracted.statement_period_start
+                            and llm_result.statement_period_start
+                        ):
                             extracted.statement_period_start = llm_result.statement_period_start
                             extracted.statement_period_end = llm_result.statement_period_end
                         if not extracted.due_date and llm_result.due_date:
@@ -642,7 +670,8 @@ async def parse_statement(
                         )
                         extracted.warnings.append(
                             "Template parser and LLM fallback both found 0 transactions. "
-                            "The statement format may not be supported or the text extraction failed."
+                            "The statement format may not be supported or the text extraction "
+                            "failed."
                         )
                 except Exception as exc:
                     logger.error(
@@ -667,13 +696,15 @@ async def parse_statement(
         if extracted_bank != user_bank_hint:
             if extracted_bank:
                 extracted.warnings.append(
-                    f"Bank hint override applied: detected {extracted_bank}, using {user_bank_hint}."
+                    "Bank hint override applied: detected "
+                    f"{extracted_bank}, using {user_bank_hint}."
                 )
             extracted.bank_name = user_bank_hint
 
     if user_account_type_hint == "credit_card" and extracted.account_type != "credit_card":
         extracted.warnings.append(
-            f"Account type hint override applied: detected {extracted.account_type}, using credit_card."
+            "Account type hint override applied: detected "
+            f"{extracted.account_type}, using credit_card."
         )
         extracted.account_type = "credit_card"
     elif user_account_type_hint == "bank_account":
@@ -685,7 +716,8 @@ async def parse_statement(
             extracted.account_type = "savings"
         elif normalized_type not in {"savings", "current"}:
             extracted.warnings.append(
-                f"Account type hint override applied: detected {normalized_type or 'unknown'}, using savings."
+                "Account type hint override applied: detected "
+                f"{normalized_type or 'unknown'}, using savings."
             )
             extracted.account_type = "savings"
 
@@ -718,7 +750,8 @@ async def parse_statement(
         ).scalar_one_or_none()
         if existing_active is not None and not allow_semantic_duplicate:
             raise StatementDuplicateError(
-                "This statement already exists (semantic duplicate detected for bank/account/period)."
+                "This statement already exists "
+                "(semantic duplicate detected for bank/account/period)."
             )
         if existing_active is not None and allow_semantic_duplicate:
             superseded_statement = existing_active
@@ -727,7 +760,6 @@ async def parse_statement(
     from app.engines.account.service import ensure_account_record
     from app.engines.insights.bill_tracker import create_bill_from_statement
     from app.engines.insights.net_worth import upsert_statement_balance_snapshot
-    from app.engines.ledger.merger import promote_to_canonical
 
     async with db.begin_nested():
         raw_pdf = await db.get(RawPdf, pdf_id)
@@ -741,7 +773,6 @@ async def parse_statement(
         quarantined_count = sum(
             1 for txn in extracted.transactions if (txn.confidence or 0.0) < confidence_threshold
         )
-        promoted_target = max(0, extracted_count - quarantined_count)
         parse_status = "parsed" if extracted_count else "partial"
         if extracted_count and quarantined_count:
             parse_status = "review_required"
@@ -764,6 +795,8 @@ async def parse_statement(
             )
         if validated.details:
             parse_errors_payload["validation"] = validated.details
+        if extracted.llm_chunk_errors:
+            parse_errors_payload["llm_chunks"] = extracted.llm_chunk_errors
 
         account = await ensure_account_record(
             db,
@@ -803,7 +836,7 @@ async def parse_statement(
             parse_status=parse_status,
             expected_row_count=expected_row_count,
             extracted_row_count=extracted_count,
-            promoted_row_count=promoted_target,
+            promoted_row_count=0,
             quarantined_row_count=quarantined_count,
             yield_rate=yield_rate,
             parse_errors=parse_errors_payload or None,
@@ -822,81 +855,66 @@ async def parse_statement(
             statement=statement,
         )
 
-        promoted_count = 0
-        for txn in extracted.transactions:
-            parser_id_lower = extracted.parser_id.lower()
-            if "vision" in parser_id_lower:
-                extraction_method = "vision"
-            elif "llm" in parser_id_lower:
-                extraction_method = "llm"
-            elif used_ocr:
-                extraction_method = "ocr"
-            else:
-                extraction_method = "template"
-            txn_confidence = max(0.0, min(1.0, float(txn.confidence or 0.0)))
-            is_quarantined = txn_confidence < confidence_threshold
-            parsed = ParsedTransaction(
-                user_id=user_id,
-                source_type="statement",
-                source_id=statement.id,
-                statement_id=statement.id,
-                transaction_date=txn.transaction_date,
-                posting_date=txn.posting_date,
-                description_raw=txn.description,
-                amount=txn.amount,
-                direction=txn.direction,
-                currency="INR",
-                foreign_amount=txn.foreign_amount,
-                foreign_currency=txn.foreign_currency,
-                reference_number=txn.reference_number,
-                confidence=txn_confidence,
-                is_quarantined=is_quarantined,
-                extraction_method=extraction_method,
-                line_number=txn.line_number,
-                dedupe_fingerprint=build_transaction_dedupe_fingerprint(
-                    user_id=user_id,
-                    account_masked=extracted.account_number_masked,
-                    transaction_date=txn.transaction_date,
-                    amount=txn.amount,
-                    description=txn.description,
-                ),
+        raw_txns = [
+            extracted_transaction_to_raw(
+                txn,
+                parser_id=extracted.parser_id,
+                used_ocr=used_ocr,
             )
-            db.add(parsed)
-            await db.flush()
-
-            if not is_quarantined:
-                await promote_to_canonical(
-                    db=db,
-                    user_id=user_id,
-                    parsed_txn=parsed,
-                    bank_name=extracted.bank_name,
-                    account_type=extracted.account_type,
-                    account_masked=extracted.account_number_masked,
-                )
-                promoted_count += 1
-
-        statement.promoted_row_count = promoted_count
-        if extracted_count and quarantined_count:
-            db.add(
-                ReviewTask(
-                    user_id=user_id,
-                    statement_id=statement.id,
-                    task_type="statement_review",
-                    status="open",
-                    reason_code="low_confidence",
-                    title="Statement has low-confidence transactions",
-                    details=(
-                        f"{quarantined_count} transaction(s) were quarantined below confidence "
-                        f"threshold {confidence_threshold:.2f}."
-                    ),
-                    payload_json={
-                        "statement_id": str(statement.id),
-                        "quarantined_row_count": quarantined_count,
-                        "promoted_row_count": promoted_count,
-                        "confidence_threshold": confidence_threshold,
-                    },
-                )
+            for txn in extracted.transactions
+        ]
+        statement_period = (
+            StatementPeriod(
+                start=extracted.statement_period_start,
+                end=extracted.statement_period_end,
             )
+            if extracted.statement_period_start and extracted.statement_period_end
+            else None
+        )
+        promotion = await promote_validated_batch(
+            raw_txns=raw_txns,
+            user_id=user_id,
+            account_id=account.id
+            if account is not None
+            else (extracted.account_number_masked or statement.id),
+            statement_id=statement.id,
+            statement_period=statement_period,
+            opening_balance=_decimal_or_none(extracted.opening_balance),
+            closing_balance=_decimal_or_none(extracted.closing_balance),
+            bank_name=extracted.bank_name,
+            account_type=extracted.account_type,
+            account_masked=extracted.account_number_masked,
+            db=db,
+        )
+
+        statement.promoted_row_count = len(promotion.promoted)
+        statement.quarantined_row_count = promotion.total_in_review
+        parse_errors_payload["typed_promotion"] = _promotion_parse_error_payload(promotion)
+        if promotion.balance_walk_passed is not None:
+            validation_payload = dict(parse_errors_payload.get("validation") or {})
+            validation_payload["balance_walk"] = {
+                "applied": True,
+                "ok": promotion.balance_walk_passed,
+                "gap": float(promotion.balance_walk_delta or Decimal("0")),
+                "delta": str(promotion.balance_walk_delta or Decimal("0")),
+                "problematic_txns": [
+                    problem.to_dict() if hasattr(problem, "to_dict") else problem
+                    for problem in promotion.balance_walk_problematic
+                ],
+                "source": "typed_pipeline",
+            }
+            parse_errors_payload["validation"] = validation_payload
+
+        if extracted_count == 0:
+            parse_status = "partial"
+        elif promotion.total_in_review or promotion.balance_walk_passed is False:
+            parse_status = "review_required"
+        elif promotion.invalid and not promotion.promoted:
+            parse_status = "partial"
+        else:
+            parse_status = "parsed"
+        statement.parse_status = parse_status
+        statement.parse_errors = parse_errors_payload or None
 
         await create_bill_from_statement(db, user_id, statement)
 
@@ -911,6 +929,39 @@ async def parse_statement(
     return statement
 
 
+def _decimal_or_none(value: float | Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _redacted_text_preview(text: str) -> str:
+    """Return a non-PII diagnostic token instead of statement header text."""
+    digest = sha256((text or "")[:4000].encode("utf-8", errors="ignore")).hexdigest()[:12]
+    line_count = len((text or "").splitlines())
+    return f"redacted chars={len(text or '')} lines={line_count} digest={digest}"
+
+
+def _promotion_parse_error_payload(promotion) -> dict[str, object]:
+    return {
+        "promoted": len(promotion.promoted),
+        "duplicates": promotion.duplicates,
+        "invalid": promotion.invalid,
+        "in_review": promotion.total_in_review,
+        "balance_walk_passed": promotion.balance_walk_passed,
+        "balance_walk_delta": str(promotion.balance_walk_delta)
+        if promotion.balance_walk_delta is not None
+        else None,
+        "balance_walk_problematic": [
+            problem.to_dict() if hasattr(problem, "to_dict") else problem
+            for problem in promotion.balance_walk_problematic
+        ],
+    }
+
+
 _parsers_loaded = False
 
 
@@ -921,10 +972,12 @@ def _ensure_parsers_loaded():
     _parsers_loaded = True
     # Import all templates to trigger registration
     from app.engines.parser.templates import (  # noqa: F401
-        hdfc_cc,
-        hdfc_savings,
         axis_cc,
         axis_savings,
+        bob_savings,
+        generic_bank_stubs,
+        hdfc_cc,
+        hdfc_savings,
         sbi_cc,
         sbi_savings,
     )

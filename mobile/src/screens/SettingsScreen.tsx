@@ -254,24 +254,6 @@ export default function SettingsScreen() {
           </Button>
           <Button
             mode="outlined"
-            onPress={() => navigation.navigate('NetWorth')}
-            icon="diamond-stone"
-            style={styles.navButton}
-            textColor={colors.primary}
-          >
-            Net Worth
-          </Button>
-          <Button
-            mode="outlined"
-            onPress={() => navigation.navigate('Subscriptions')}
-            icon="repeat"
-            style={styles.navButton}
-            textColor={colors.primary}
-          >
-            Subscriptions
-          </Button>
-          <Button
-            mode="outlined"
             onPress={() => navigation.navigate('Assistant')}
             icon="message-processing-outline"
             style={styles.navButton}

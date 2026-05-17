@@ -3,7 +3,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    restart: unless-stopped
+    restart: on-failure:3
     network_mode: host
     env_file:
       - .env
@@ -15,7 +15,10 @@ services:
       PORT: 8356
       UPLOAD_DIR: /app/uploads
       FRONTEND_DIST_DIR: /app/frontend/dist
-      LLM_BASE_URL: http://localhost:8472/v1
+      LLM_BASE_URL: http://127.0.0.1:8097/v1
+      LLM_MODEL: Qwen3.6-27B-Q5_K_S.gguf
+      LLM_STARTUP_VALIDATION: "false"
+      LLM_REQUIRED_FOR_BOOT: "false"
       LOCAL_ALLOWED_LLM_HOSTS: localhost,127.0.0.1,::1
     depends_on:
       db:

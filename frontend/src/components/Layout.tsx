@@ -6,7 +6,6 @@ import {
   List,
   FileText,
   Landmark,
-  Gem,
   BarChart3,
   Wallet,
   Receipt,
@@ -20,7 +19,6 @@ import {
   ArrowRight,
   UserRound,
   MessageSquareText,
-  Repeat,
 } from 'lucide-react';
 import { api } from '../api/client';
 import ThemeModeSelect from './ThemeModeSelect';
@@ -32,8 +30,6 @@ const navItems = [
   { to: '/transactions', icon: List, label: 'Transactions' },
   { to: '/statements', icon: FileText, label: 'Statements' },
   { to: '/accounts', icon: Landmark, label: 'Accounts' },
-  { to: '/net-worth', icon: Gem, label: 'Net Worth' },
-  { to: '/subscriptions', icon: Repeat, label: 'Subscriptions' },
   { to: '/insights', icon: BarChart3, label: 'Insights' },
   { to: '/budgets', icon: Wallet, label: 'Budgets' },
   { to: '/bills', icon: Receipt, label: 'Bills' },

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from difflib import SequenceMatcher
 
 from sqlalchemy import and_, select
@@ -46,7 +47,7 @@ class DedupEngine:
             user_id=user_id,
             account_masked=account_masked,
             transaction_date=parsed_txn.transaction_date,
-            amount=float(parsed_txn.amount),
+            amount=parsed_txn.amount,
             description=parsed_txn.description_raw,
         )
         exact = await self._match_by_fingerprint(db, user_id, fingerprint)
@@ -146,7 +147,7 @@ class DedupEngine:
         query = select(CanonicalTransaction).where(
             and_(
                 CanonicalTransaction.user_id == user_id,
-                CanonicalTransaction.amount == float(parsed_txn.amount),
+                CanonicalTransaction.amount == _quantized_amount(parsed_txn.amount),
                 CanonicalTransaction.direction == parsed_txn.direction,
                 CanonicalTransaction.transaction_date >= date_from,
                 CanonicalTransaction.transaction_date <= date_to,
@@ -166,8 +167,8 @@ class DedupEngine:
         for canonical in candidates:
             similarity = SequenceMatcher(
                 None,
-                parsed_txn.description_raw.upper(),
-                canonical.merchant_raw.upper(),
+                (parsed_txn.description_raw or "").upper(),
+                (canonical.merchant_raw or "").upper(),
             ).ratio()
 
             if similarity > 0.6 and similarity > best_score:
@@ -195,7 +196,7 @@ class DedupEngine:
         query = select(CanonicalTransaction).where(
             and_(
                 CanonicalTransaction.user_id == user_id,
-                CanonicalTransaction.amount == float(parsed_txn.amount),
+                CanonicalTransaction.amount == _quantized_amount(parsed_txn.amount),
                 CanonicalTransaction.direction == parsed_txn.direction,
                 CanonicalTransaction.transaction_date >= date_from,
                 CanonicalTransaction.transaction_date <= date_to,
@@ -228,6 +229,10 @@ class DedupEngine:
             return best_match, max(confidence, 0.6)
 
         return None, 0.0
+
+
+def _quantized_amount(value) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 async def merge_source(

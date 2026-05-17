@@ -173,3 +173,41 @@ async def test_llm_parse_statement_drops_invalid_rows_without_losing_valid_rows(
     assert result is not None
     assert len(result.transactions) == 1
     assert result.transactions[0].reference_number == "504321987654"
+
+
+@pytest.mark.asyncio
+async def test_llm_parse_statement_records_chunk_failures(monkeypatch):
+    monkeypatch.setattr(settings, "llm_iterative_chunk_chars", 1000)
+    monkeypatch.setattr(settings, "llm_iterative_overlap_lines", 0)
+    monkeypatch.setattr(settings, "llm_max_chunk_count", 4)
+
+    valid_payload = {
+        "bank_name": "HDFC",
+        "account_type": "savings",
+        "transactions": [
+            {
+                "date": "03/04/2025",
+                "description": "NEFT CREDIT",
+                "amount": "100.00",
+                "direction": "credit",
+                "confidence": 0.84,
+            }
+        ],
+    }
+    client = _FakeLLMClient([valid_payload, None, ["invalid-schema"], valid_payload])
+    text = "\n".join(f"line {i} " + ("x" * 180) for i in range(30))
+
+    result = await llm_parse_statement(
+        client,  # type: ignore[arg-type]
+        text,
+        bank_hint="HDFC",
+        account_type_hint="bank_account",
+    )
+
+    assert result is not None
+    assert result.llm_chunk_errors == {
+        "total": 4,
+        "failed_empty": [2],
+        "failed_schema": [3],
+    }
+    assert any("2/4 chunks failed" in warning for warning in result.warnings)

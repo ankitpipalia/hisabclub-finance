@@ -59,10 +59,11 @@ type UploadItem = {
 type UploadNotification = {
   id: string;
   fileName: string;
-  status: 'queued' | 'reviewing' | 'success' | 'error';
+  status: 'queued' | 'reviewing' | 'review_required' | 'success' | 'error';
   message: string;
   bankName?: string | null;
   accountType?: string | null;
+  statementId?: string | null;
   canReprocess?: boolean;
 };
 
@@ -92,6 +93,60 @@ export default function UploadPage() {
     () => notifications.filter((item) => item.status === 'error').length,
     [notifications],
   );
+  const reviewRequiredCount = useMemo(
+    () => notifications.filter((item) => item.status === 'review_required').length,
+    [notifications],
+  );
+
+  useEffect(() => {
+    const intervals: NodeJS.Timeout[] = [];
+    for (const notification of notifications) {
+      if (notification.status === 'reviewing' || notification.status === 'queued') {
+        const poll = async () => {
+          try {
+            const pdfId = notification.id;
+            const statusData = await api.getUploadStatus(pdfId);
+            const finalStatus =
+              statusData.status === 'review_required'
+                ? 'review_required'
+                : statusData.status === 'success' || statusData.status === 'parsed'
+                  ? 'success'
+                  : statusData.status === 'duplicate'
+                    ? 'error'
+                    : statusData.status === 'failed'
+                      ? 'error'
+                      : 'reviewing';
+            if (finalStatus !== notification.status) {
+              setNotifications((current) =>
+                current.map((entry) =>
+                  entry.id === notification.id
+                    ? {
+                        ...entry,
+                        status: finalStatus as UploadNotification['status'],
+                        message: statusData.message || entry.message,
+                        statementId: statusData.statement_id || null,
+                      }
+                    : entry,
+                ),
+              );
+              if (finalStatus !== 'reviewing') {
+                return;
+              }
+            }
+          } catch {
+            // ignore polling errors
+          }
+        };
+        const interval = setInterval(poll, 3000);
+        intervals.push(interval);
+      }
+    }
+    return () => {
+      for (const interval of intervals) {
+        clearInterval(interval);
+      }
+    };
+  }, [notifications]);
 
   useEffect(() => {
     let cancelled = false;
@@ -288,6 +343,9 @@ export default function UploadPage() {
     }
     if (status === 'success') {
       return <CheckCircle2 size={16} strokeWidth={1.5} />;
+    }
+    if (status === 'review_required') {
+      return <FileText size={16} strokeWidth={1.5} />;
     }
     return <XCircle size={16} strokeWidth={1.5} />;
   };
@@ -535,7 +593,7 @@ export default function UploadPage() {
           ) : (
             <div className="space-y-3" style={{ marginTop: '0.9rem' }}>
               <p className="hc-panel-sub">
-                Total {notifications.length} · Reviewing {queuedCount} · Success {successCount} · Error {errorCount}
+                Total {notifications.length} · Reviewing {queuedCount} · Success {successCount} · Needs Review {reviewRequiredCount} · Error {errorCount}
               </p>
               {notifications.map((item) => (
                 <div
@@ -543,9 +601,11 @@ export default function UploadPage() {
                   className={`hc-msg ${
                     item.status === 'success'
                       ? 'hc-msg-ok'
-                      : item.status === 'error'
-                        ? 'hc-msg-danger'
-                        : ''
+                      : item.status === 'review_required'
+                        ? 'hc-msg-ok'
+                        : item.status === 'error'
+                          ? 'hc-msg-danger'
+                          : ''
                   }`}
                   style={{ alignItems: 'flex-start' }}
                 >
@@ -557,6 +617,15 @@ export default function UploadPage() {
                       <p className="hc-panel-sub" style={{ marginTop: '0.35rem' }}>
                         {(item.bankName || 'Auto-detected')} · {item.accountType || 'type pending'}
                       </p>
+                    )}
+                    {item.statementId && item.status === 'review_required' && (
+                      <a
+                        href={`/statements/${item.statementId}/review`}
+                        className="hc-panel-sub"
+                        style={{ marginTop: '0.25rem', display: 'inline-block', color: 'var(--hc-accent)' }}
+                      >
+                        View statement review →
+                      </a>
                     )}
                   </div>
                 </div>
@@ -581,6 +650,9 @@ function normalizeReviewStatus(status: string): UploadNotification['status'] {
     status === 'validating'
   ) {
     return 'reviewing';
+  }
+  if (status === 'review_required') {
+    return 'review_required';
   }
   if (status === 'success' || status === 'parsed') {
     return 'success';

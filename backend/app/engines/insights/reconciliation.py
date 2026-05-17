@@ -33,8 +33,14 @@ def pair_transfer_candidates(
     candidates: list[TransferCandidate],
     max_gap_days: int = 5,
 ) -> tuple[list[dict], list[TransferCandidate]]:
-    debits = [c for c in candidates if c.direction == "debit"]
-    credits = [c for c in candidates if c.direction == "credit"]
+    debits = sorted(
+        [c for c in candidates if c.direction == "debit"],
+        key=lambda c: (c.transaction_date, c.id),
+    )
+    credits = sorted(
+        [c for c in candidates if c.direction == "credit"],
+        key=lambda c: (c.transaction_date, c.id),
+    )
 
     matched_credit_ids: set[uuid.UUID] = set()
     matched_debit_ids: set[uuid.UUID] = set()
@@ -186,7 +192,7 @@ async def _load_source_files(
 
 
 def _amount_equal(a: float, b: float) -> bool:
-    return abs(float(a) - float(b)) <= 0.5
+    return abs(float(a) - float(b)) <= 0.50
 
 
 def _confidence_for_pair(debit: TransferCandidate, credit: TransferCandidate, gap_days: int) -> float:

@@ -26,6 +26,12 @@ class StatementResponse(BaseModel):
     promoted_row_count: int | None = None
     quarantined_row_count: int | None = None
     yield_rate: float | None = None
+    balance_walk_passed: bool | None = None
+    balance_walk_delta: float | None = None
+    total_extracted: int = 0
+    total_promoted: int = 0
+    total_duplicates: int = 0
+    total_in_review: int = 0
     source_type: str | None = None
     is_reprocess: bool = False
     reprocess_count: int = 1

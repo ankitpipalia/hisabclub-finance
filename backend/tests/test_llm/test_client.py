@@ -46,6 +46,24 @@ class _FakeAsyncClient:
         )
 
 
+class _FailingAsyncClient:
+    def __init__(self, *, timeout: float) -> None:
+        self.timeout = timeout
+
+    async def __aenter__(self) -> _FailingAsyncClient:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def post(self, url: str, json: dict, headers: dict) -> _FakeResponse:
+        _FailingAsyncClient.calls += 1
+        raise RuntimeError("endpoint down")
+
+
+_FailingAsyncClient.calls = 0
+
+
 @pytest.mark.asyncio
 async def test_llm_client_disables_thinking_mode(monkeypatch):
     from app.engines.llm import client as llm_client_module
@@ -53,9 +71,9 @@ async def test_llm_client_disables_thinking_mode(monkeypatch):
     monkeypatch.setattr(llm_client_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     client = LLMClient(
-        base_url="http://localhost:8094/v1",
+        base_url="http://localhost:8097/v1",
         api_key="",
-        model="Qwen3.5-27B-Q3_K_M.gguf",
+        model="Qwen3.6-27B-Q5_K_S.gguf",
     )
     result = await client.chat(
         messages=[{"role": "user", "content": "test"}],
@@ -64,10 +82,29 @@ async def test_llm_client_disables_thinking_mode(monkeypatch):
     )
 
     assert result == "OK"
-    assert _FakeAsyncClient.captured["url"] == "http://localhost:8094/v1/chat/completions"
+    assert _FakeAsyncClient.captured["url"] == "http://localhost:8097/v1/chat/completions"
     assert _FakeAsyncClient.captured["json"]["chat_template_kwargs"] == {
         "enable_thinking": False
     }
+
+
+@pytest.mark.asyncio
+async def test_llm_client_circuit_breaker_skips_open_endpoint(monkeypatch):
+    from app.engines.llm import client as llm_client_module
+
+    monkeypatch.setattr(llm_client_module.httpx, "AsyncClient", _FailingAsyncClient)
+    _FailingAsyncClient.calls = 0
+
+    client = LLMClient(
+        base_url="http://localhost:18097/v1",
+        api_key="",
+        model="Qwen3.6-27B-Q5_K_S.gguf",
+    )
+    for _ in range(3):
+        assert await client.chat([{"role": "user", "content": "test"}], max_attempts=1) == ""
+
+    assert await client.chat([{"role": "user", "content": "test"}], max_attempts=1) == ""
+    assert _FailingAsyncClient.calls == 3
 
 
 @pytest.mark.asyncio
@@ -77,9 +114,9 @@ async def test_llm_client_chat_json_sets_response_format(monkeypatch):
     monkeypatch.setattr(llm_client_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     client = LLMClient(
-        base_url="http://localhost:8094/v1",
+        base_url="http://localhost:8097/v1",
         api_key="",
-        model="Qwen3.5-27B-Q3_K_M.gguf",
+        model="Qwen3.6-27B-Q5_K_S.gguf",
     )
 
     payload = await client.chat_json(
@@ -106,7 +143,7 @@ async def test_llm_client_chat_vision_json_sets_response_format(monkeypatch):
     monkeypatch.setattr(llm_client_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     client = LLMClient(
-        base_url="http://localhost:8094/v1",
+        base_url="http://localhost:8097/v1",
         api_key="",
         model="Qwen3-VL-8B-Q4_K_M.gguf",
     )

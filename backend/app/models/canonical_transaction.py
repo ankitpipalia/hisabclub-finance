@@ -5,13 +5,14 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     Text,
-    func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -56,6 +57,26 @@ class CanonicalTransaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     account_type: Mapped[str | None] = mapped_column(String(50))
     dedupe_fingerprint: Mapped[str | None] = mapped_column(String(64))
 
+    # Extraction audit and typed-pipeline lineage.
+    extraction_source: Mapped[str] = mapped_column(String(20), default="manual", nullable=False)
+    extraction_confidence: Mapped[float | None] = mapped_column(Float)
+    source_statement_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("statements.id", ondelete="SET NULL")
+    )
+    source_page_number: Mapped[int | None] = mapped_column(Integer)
+    source_char_offset: Mapped[int | None] = mapped_column(Integer)
+    source_evidence: Mapped[dict | None] = mapped_column(JSONB)
+    dedup_key: Mapped[str | None] = mapped_column(String(64))
+    validation_status: Mapped[str] = mapped_column(String(20), default="valid", nullable=False)
+    validation_errors: Mapped[list[str] | None] = mapped_column(JSONB)
+    balance_walk_passed: Mapped[bool | None] = mapped_column(Boolean)
+    review_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("review_tasks.id", ondelete="SET NULL")
+    )
+    user_override: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    override_reason: Mapped[str | None] = mapped_column(Text)
+    override_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Foreign exchange
     foreign_amount: Mapped[float | None] = mapped_column(Numeric(12, 2))
     foreign_currency: Mapped[str | None] = mapped_column(String(3))
@@ -73,6 +94,8 @@ class CanonicalTransaction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user = relationship("User", back_populates="canonical_transactions")
     merchant = relationship("Merchant")
     category = relationship("Category")
+    source_statement = relationship("Statement", foreign_keys=[source_statement_id])
+    review_task = relationship("ReviewTask", foreign_keys=[review_task_id])
     sources = relationship("TransactionSource", back_populates="canonical_transaction")
     transfer_matches_as_debit = relationship(
         "TransferMatch",

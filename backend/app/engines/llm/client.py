@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -12,6 +13,35 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class _CircuitBreaker:
+    def __init__(self, *, fail_threshold: int = 3, reset_timeout_sec: float = 60.0) -> None:
+        self.fail_threshold = fail_threshold
+        self.reset_timeout_sec = reset_timeout_sec
+        self.failure_count = 0
+        self.opened_at: float | None = None
+
+    def allow_request(self) -> bool:
+        if self.opened_at is None:
+            return True
+        if time.monotonic() - self.opened_at >= self.reset_timeout_sec:
+            self.failure_count = 0
+            self.opened_at = None
+            return True
+        return False
+
+    def record_success(self) -> None:
+        self.failure_count = 0
+        self.opened_at = None
+
+    def record_failure(self) -> None:
+        self.failure_count += 1
+        if self.failure_count >= self.fail_threshold:
+            self.opened_at = time.monotonic()
+
+
+_CIRCUITS_BY_BASE_URL: dict[str, _CircuitBreaker] = {}
 
 
 class LLMClient:
@@ -22,6 +52,10 @@ class LLMClient:
         self.api_key = api_key
         self.model = model
         self._validate_local_only()
+        self._circuit = _CIRCUITS_BY_BASE_URL.setdefault(
+            self.base_url,
+            _CircuitBreaker(),
+        )
 
     def _validate_local_only(self) -> None:
         if not settings.local_only_mode:
@@ -55,7 +89,7 @@ class LLMClient:
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            # Qwen3.5 on llama.cpp emits reasoning_content by default. Disable
+            # Qwen-family models on llama.cpp can emit reasoning_content by default. Disable
             # thinking mode so downstream finance prompts receive a final answer
             # in message.content.
             "chat_template_kwargs": {"enable_thinking": False},
@@ -175,6 +209,10 @@ class LLMClient:
         max_attempts: int | None,
     ) -> str:
         url = f"{self.base_url}/chat/completions"
+        if not self._circuit.allow_request():
+            logger.warning("LLM circuit is open for %s; skipping request.", self.base_url)
+            return ""
+
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -192,8 +230,10 @@ class LLMClient:
                     if choices:
                         msg = choices[0]["message"]
                         content = msg.get("content") or ""
+                        self._circuit.record_success()
                         return content.strip()
                     logger.warning("LLM returned no choices: %s", data)
+                    self._circuit.record_failure()
                     return ""
             except httpx.TimeoutException as exc:
                 last_error = exc
@@ -226,6 +266,7 @@ class LLMClient:
             safe_attempts,
             last_error,
         )
+        self._circuit.record_failure()
         return ""
 
     async def chat_json(

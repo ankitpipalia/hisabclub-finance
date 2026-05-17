@@ -26,7 +26,8 @@ HisabClub is a privacy-first, self-hosted Indian personal finance ledger.
 - backend on host: `http://localhost:8356`
 - built web frontend served by the backend at `/`
 - PostgreSQL and Redis in Docker
-- shared llama.cpp server on host: `http://localhost:8472/v1`
+- shared Qwen text LLM on host: `http://127.0.0.1:8097/v1`
+- shared vision LLM on host: `http://127.0.0.1:8096/v1`
 - Expo/Metro for mobile debug on `http://localhost:8081`
 
 ## Permanent dev domains
@@ -44,7 +45,7 @@ make setup
 make local-stack
 ```
 
-`make local-stack` starts Postgres and Redis, starts the shared local LLM if needed, builds the frontend, applies migrations, seeds categories and merchants, and runs the backend on the host. The backend then serves both the API and the built web app on `:8356`.
+`make local-stack` starts Postgres and Redis, builds the frontend, applies migrations, seeds categories and merchants, and runs the backend on the host. LLM checks are lazy by default, so the backend can boot even when local model services are offline.
 
 Backfill local document knowledge from existing PDFs:
 ```bash
@@ -59,14 +60,18 @@ make local-check
 ## Shared local LLM
 The repo no longer owns its own LLM runtime. It expects the shared stack under `/home/ankit/Documents/local-llm`.
 
-Model path:
-- `/home/ankit/Documents/local-llm/models/unsloth-Qwen3.5-27B-GGUF/Qwen3.5-27B-Q3_K_M.gguf`
-
-Manual start:
+Shared runtime commands:
 ```bash
-cd /home/ankit/Documents/local-llm
-./llama-turbo-cuda.sh start
+bash /home/ankit/Documents/local-llm/shared-local-llm.sh start qwen
+bash /home/ankit/Documents/local-llm/shared-local-llm.sh status qwen
 ```
+
+Host-native app startup exports should resolve to:
+- `LLM_BASE_URL=http://127.0.0.1:8097/v1`
+- `LLM_MODEL=Qwen3.6-27B-Q5_K_S.gguf`
+- `LLM_VISION_BASE_URL=http://127.0.0.1:8096/v1` when vision parsing is enabled
+- `LLM_STARTUP_VALIDATION=false`
+- `LLM_REQUIRED_FOR_BOOT=false`
 
 The backend now stores local document chunks in PostgreSQL and retrieves same-user context during statement classification and fallback parsing. This is local retrieval, not a hosted vector service.
 Prompt templates and versions are in `backend/app/engines/llm/prompts.py`.

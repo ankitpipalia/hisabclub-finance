@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import desc, select
 
 from app.dependencies import CurrentUser, DbSession
 from app.engines.ledger.merger import promote_to_canonical
+from app.models.canonical_transaction import CanonicalTransaction
 from app.models.parsed_transaction import ParsedTransaction
 from app.models.review_task import ReviewTask
 from app.models.statement import Statement
 from app.schemas.review import (
+    CorrectReviewTaskRequest,
     ResolveReviewTaskRequest,
     ResolveReviewTaskResponse,
     ReviewTaskResponse,
@@ -18,11 +21,25 @@ from app.schemas.review import (
 
 router = APIRouter()
 
+IMMUTABLE_TRANSACTION_FIELDS = {
+    "id",
+    "user_id",
+    "dedup_key",
+    "dedupe_fingerprint",
+    "source_statement_id",
+    "source_evidence",
+    "source_page_number",
+    "source_char_offset",
+    "extraction_source",
+    "created_at",
+    "updated_at",
+}
+
 
 def _to_review_task_response(task: ReviewTask) -> ReviewTaskResponse:
     return ReviewTaskResponse(
         id=str(task.id),
-        statement_id=str(task.statement_id),
+        statement_id=str(task.statement_id) if task.statement_id else None,
         task_type=task.task_type,
         status=task.status,
         reason_code=task.reason_code,
@@ -47,8 +64,8 @@ async def list_review_tasks(
     if status_filter:
         query = query.where(ReviewTask.status == status_filter)
     tasks = (
-        await db.execute(query.order_by(desc(ReviewTask.created_at)).limit(limit))
-    ).scalars().all()
+        (await db.execute(query.order_by(desc(ReviewTask.created_at)).limit(limit))).scalars().all()
+    )
     return [_to_review_task_response(task) for task in tasks]
 
 
@@ -79,6 +96,11 @@ async def resolve_review_task(
             detail="action must be one of: promote, ignore",
         )
 
+    if task.statement_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This review task is not linked to a statement.",
+        )
     statement = (
         await db.execute(
             select(Statement).where(Statement.id == task.statement_id, Statement.user_id == user.id)
@@ -91,18 +113,25 @@ async def resolve_review_task(
         )
 
     rows = (
-        await db.execute(
-            select(ParsedTransaction)
-            .where(
-                ParsedTransaction.user_id == user.id,
-                ParsedTransaction.statement_id == statement.id,
-                ParsedTransaction.is_quarantined == True,  # noqa: E712
+        (
+            await db.execute(
+                select(ParsedTransaction)
+                .where(
+                    ParsedTransaction.user_id == user.id,
+                    ParsedTransaction.statement_id == statement.id,
+                    ParsedTransaction.is_quarantined == True,  # noqa: E712
+                )
+                .order_by(
+                    ParsedTransaction.transaction_date.asc(), ParsedTransaction.created_at.asc()
+                )
             )
-            .order_by(ParsedTransaction.transaction_date.asc(), ParsedTransaction.created_at.asc())
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     promoted = 0
+    merged = 0
     ignored = 0
     now = datetime.now(timezone.utc)
     for parsed in rows:
@@ -112,15 +141,19 @@ async def resolve_review_task(
         parsed.is_quarantined = False
 
         if action == "promote":
-            await promote_to_canonical(
+            canonical = await promote_to_canonical(
                 db=db,
                 user_id=user.id,
                 parsed_txn=parsed,
                 bank_name=statement.bank_name,
                 account_type=statement.account_type,
                 account_masked=statement.account_number_masked,
+                validation_status="valid",
             )
-            promoted += 1
+            if getattr(canonical, "_hc_was_dedup_merge", False):
+                merged += 1
+            else:
+                promoted += 1
         else:
             ignored += 1
 
@@ -131,6 +164,7 @@ async def resolve_review_task(
         **(task.payload_json or {}),
         "resolved_action": action,
         "promoted_count": promoted,
+        "merged_count": merged,
         "ignored_count": ignored,
     }
 
@@ -145,5 +179,126 @@ async def resolve_review_task(
         task=_to_review_task_response(task),
         promoted_count=promoted,
         ignored_count=ignored,
+        merged_count=merged,
     )
 
+
+@router.post("/tasks/{task_id}/approve", response_model=ReviewTaskResponse)
+async def approve_review_task(task_id: str, user: CurrentUser, db: DbSession):
+    task = await _get_open_task(task_id=task_id, user_id=user.id, db=db)
+    txn = await _canonical_from_task(task=task, user_id=user.id, db=db)
+    now = datetime.now(timezone.utc)
+    if txn is not None:
+        txn.review_task_id = None
+        _archive_prior_validation(task, txn)
+        txn.validation_status = "valid"
+    task.status = "resolved"
+    task.resolved_by_user_id = user.id
+    task.resolved_at = now
+    task.payload_json = {**(task.payload_json or {}), "resolved_action": "approved"}
+    return _to_review_task_response(task)
+
+
+@router.post("/tasks/{task_id}/correct", response_model=ReviewTaskResponse)
+async def correct_review_task(
+    task_id: str,
+    request: CorrectReviewTaskRequest,
+    user: CurrentUser,
+    db: DbSession,
+):
+    task = await _get_open_task(task_id=task_id, user_id=user.id, db=db)
+    txn = await _canonical_from_task(task=task, user_id=user.id, db=db)
+    if txn is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Review task is not linked to a canonical transaction.",
+        )
+
+    applied: dict[str, str] = {}
+    for field, value in (request.corrections or {}).items():
+        if field in IMMUTABLE_TRANSACTION_FIELDS or not hasattr(txn, field):
+            continue
+        coerced = _coerce_transaction_value(field, value)
+        setattr(txn, field, coerced)
+        applied[field] = str(coerced)
+
+    now = datetime.now(timezone.utc)
+    txn.user_override = True
+    txn.override_reason = request.reason
+    txn.override_at = now
+    txn.review_task_id = None
+    _archive_prior_validation(task, txn)
+    txn.validation_status = "valid"
+    task.status = "resolved"
+    task.resolved_by_user_id = user.id
+    task.resolved_at = now
+    task.payload_json = {
+        **(task.payload_json or {}),
+        "resolved_action": "corrected",
+        "applied_corrections": applied,
+        "correction_reason": request.reason,
+    }
+    return _to_review_task_response(task)
+
+
+def _archive_prior_validation(task: ReviewTask, txn: CanonicalTransaction) -> None:
+    payload = dict(task.payload_json or {})
+    payload.setdefault(
+        "prior_validation",
+        {
+            "status": txn.validation_status,
+            "errors": txn.validation_errors,
+        },
+    )
+    task.payload_json = payload
+
+
+async def _get_open_task(*, task_id: str, user_id, db: DbSession) -> ReviewTask:
+    task = (
+        await db.execute(
+            select(ReviewTask).where(ReviewTask.id == task_id, ReviewTask.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if task.status != "open":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only open review tasks can be changed.",
+        )
+    return task
+
+
+async def _canonical_from_task(
+    *, task: ReviewTask, user_id, db: DbSession
+) -> CanonicalTransaction | None:
+    payload = task.payload_json or {}
+    txn_id = payload.get("canonical_transaction_id")
+    if not txn_id:
+        return None
+    return (
+        await db.execute(
+            select(CanonicalTransaction).where(
+                CanonicalTransaction.id == txn_id,
+                CanonicalTransaction.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _coerce_transaction_value(field: str, value):
+    if field in {"amount", "foreign_amount"}:
+        try:
+            return Decimal(str(value)).quantize(Decimal("0.01"))
+        except (InvalidOperation, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid decimal for {field}") from exc
+    if field in {"transaction_date", "posting_date"}:
+        if value in {None, ""} and field == "posting_date":
+            return None
+        try:
+            return date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid date for {field}") from exc
+    if field in {"is_recurring", "is_anomalous", "is_excluded"}:
+        return bool(value)
+    return value

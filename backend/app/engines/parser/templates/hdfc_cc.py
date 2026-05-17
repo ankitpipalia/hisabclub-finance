@@ -15,6 +15,7 @@ Known formats:
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 from app.engines.parser.amount_utils import parse_indian_amount, parse_indian_date
 from app.engines.parser.base import (
@@ -23,6 +24,68 @@ from app.engines.parser.base import (
     StatementParser,
     register_parser,
 )
+
+
+def extract_hdfc_cc_period(text: str):
+    """Extract HDFC CC billing period, with statement-date fallback.
+
+    Some legacy HDFC PDFs only expose "Statement Date". In that case we use a
+    deterministic 30-day billing window so downstream statement-period checks
+    and dedup metadata are not left empty.
+    """
+    period_patterns = [
+        # "Billing Period 18 Feb, 2026 - 17 Mar, 2026" (HDFC Swiggy card format)
+        (
+            r"Billing\s*Period\s*[:\-]?\s*"
+            r"(\d{1,2}\s+\w{3,9},?\s+\d{4})\s*[\-–]\s*"
+            r"(\d{1,2}\s+\w{3,9},?\s+\d{4})"
+        ),
+        # "Statement for the period 01 Dec 2024 to 31 Dec 2024"
+        (
+            r"Statement\s+for\s+(?:the\s+)?period\s*[:\-]?\s*"
+            r"(\d{1,2}\s+\w{3,9},?\s+\d{4})\s*(?:to|-|–)\s*"
+            r"(\d{1,2}\s+\w{3,9},?\s+\d{4})"
+        ),
+        # "Statement Period: 12/10/2024 to 11/11/2024"
+        (
+            r"Statement\s*Period\s*[:\-]?\s*"
+            r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\s*(?:to|-)\s*"
+            r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})"
+        ),
+        # "Statement Period: 12 Oct 2024 to 11 Nov 2024"
+        (
+            r"(?:Statement|Billing)\s*Period\s*[:\-]?\s*"
+            r"(\d{1,2}[\s/\-]\w{3,9}[\s,/\-]+\d{2,4})\s*(?:to|-|–)\s*"
+            r"(\d{1,2}[\s/\-]\w{3,9}[\s,/\-]+\d{2,4})"
+        ),
+        # "From 12/10/2024 To 11/11/2024"
+        (
+            r"(?:From|Period)\s*[:\-]?\s*"
+            r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\s*(?:to|To|-)\s*"
+            r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})"
+        ),
+    ]
+
+    for pattern in period_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        start = parse_indian_date(match.group(1))
+        end = parse_indian_date(match.group(2))
+        if start and end:
+            return start, end
+
+    match = re.search(
+        r"Statement\s*Date\s*[:\-]?\s*(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        end = parse_indian_date(match.group(1))
+        if end:
+            return end - timedelta(days=30), end
+
+    return None, None
 
 
 class HdfcCreditCardParser(StatementParser):
@@ -74,6 +137,7 @@ class HdfcCreditCardParser(StatementParser):
 
         self._extract_metadata(full_text, stmt)
         self._extract_transactions(pages, full_text, stmt)
+        self._expand_period_to_transaction_range(stmt)
 
         return stmt
 
@@ -95,39 +159,8 @@ class HdfcCreditCardParser(StatementParser):
                 f"XXXX XXXX XXXX {raw[-4:]}" if len(raw) >= 4 else raw
             )
 
-        # Statement period — multiple HDFC date formats
-        period_patterns = [
-            # "Billing Period 18 Feb, 2026 - 17 Mar, 2026" (HDFC Swiggy card format)
-            (
-                r"Billing\s*Period\s*[:\-]?\s*"
-                r"(\d{1,2}\s+\w{3,9},?\s+\d{4})\s*[\-–]\s*"
-                r"(\d{1,2}\s+\w{3,9},?\s+\d{4})"
-            ),
-            # "Statement Period: 12/10/2024 to 11/11/2024"
-            (
-                r"Statement\s*(?:Period|Date)\s*[:\-]?\s*"
-                r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\s*(?:to|-)\s*"
-                r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})"
-            ),
-            # "Statement Period: 12 Oct 2024 to 11 Nov 2024"
-            (
-                r"(?:Statement|Billing)\s*(?:Period|Date)\s*[:\-]?\s*"
-                r"(\d{1,2}[\s/\-]\w{3,9}[\s,/\-]+\d{2,4})\s*(?:to|-|–)\s*"
-                r"(\d{1,2}[\s/\-]\w{3,9}[\s,/\-]+\d{2,4})"
-            ),
-            # "From 12/10/2024 To 11/11/2024"
-            (
-                r"(?:From|Period)\s*[:\-]?\s*"
-                r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\s*(?:to|To|-)\s*"
-                r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})"
-            ),
-        ]
-        for pat in period_patterns:
-            m = re.search(pat, text, re.IGNORECASE)
-            if m:
-                stmt.statement_period_start = parse_indian_date(m.group(1))
-                stmt.statement_period_end = parse_indian_date(m.group(2))
-                break
+        # Statement period — multiple HDFC date formats, plus statement-date fallback.
+        stmt.statement_period_start, stmt.statement_period_end = extract_hdfc_cc_period(text)
 
         # Total amount due — HDFC uses "Total Amount Due" or "Total Dues"
         # Note: HDFC Swiggy card uses "C" prefix for currency (₹ extracted as C)
@@ -266,6 +299,21 @@ class HdfcCreditCardParser(StatementParser):
             if parsed is not None:
                 amounts.append(parsed)
         return amounts
+
+    def _expand_period_to_transaction_range(self, stmt: ExtractedStatement) -> None:
+        if not stmt.transactions:
+            return
+
+        txn_dates = [txn.transaction_date for txn in stmt.transactions if txn.transaction_date]
+        if not txn_dates:
+            return
+
+        first_txn_date = min(txn_dates)
+        last_txn_date = max(txn_dates)
+        if stmt.statement_period_start is None or first_txn_date < stmt.statement_period_start:
+            stmt.statement_period_start = first_txn_date
+        if stmt.statement_period_end is None or last_txn_date > stmt.statement_period_end:
+            stmt.statement_period_end = last_txn_date
 
     # ── Transaction extraction ──────────────────────────────
 

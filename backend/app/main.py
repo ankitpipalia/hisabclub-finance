@@ -3,14 +3,18 @@ import contextlib
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
 from app.api.v1.router import api_router
 from app.config import settings
+from app.database import async_session_factory
+
 
 def _resolve_frontend_dir() -> Path | None:
     configured = os.getenv("FRONTEND_DIST_DIR")
@@ -84,7 +88,46 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "app": settings.app_name}
+    try:
+        async with async_session_factory() as db:
+            await db.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "database": "unavailable", "llm": "not_checked_at_boot"},
+        ) from exc
+
+    try:
+        await _ping_redis(settings.redis_url)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "redis": "unavailable", "llm": "not_checked_at_boot"},
+        ) from exc
+
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "database": "ok",
+        "redis": "ok",
+        "llm": "not_checked_at_boot",
+    }
+
+
+async def _ping_redis(redis_url: str) -> None:
+    parsed = urlparse(redis_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 6379
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(b"*1\r\n$4\r\nPING\r\n")
+        await writer.drain()
+        response = await asyncio.wait_for(reader.readline(), timeout=2.0)
+        if not response.startswith(b"+PONG"):
+            raise RuntimeError("unexpected Redis PING response")
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 # Serve frontend static files
@@ -105,6 +148,11 @@ if FRONTEND_DIR:
     @app.get("/{path:path}")
     async def spa_catch_all(request: Request, path: str):
         # Don't catch API or health routes
-        if path.startswith("api/") or path == "health" or path.startswith("docs") or path.startswith("openapi"):
+        if (
+            path.startswith("api/")
+            or path == "health"
+            or path.startswith("docs")
+            or path.startswith("openapi")
+        ):
             return None
         return FileResponse(FRONTEND_DIR / "index.html")

@@ -36,4 +36,4 @@ This repository is a monorepo with three apps:
 ## Security & Configuration Tips
 - Do not commit `.env` or secrets. Start from `.env.example`.
 - Docker local defaults are Postgres `6543` and Redis `6769`; keep `DATABASE_URL*` and `REDIS_URL` aligned.
-- LLM support is optional; enable with `LLM_ENABLED=true` and start the shared server with `/home/ankit/Documents/local-llm/llama-turbo-cuda.sh start`.
+- LLM support is optional; enable with `LLM_ENABLED=true` and start the shared Qwen text server with `/home/ankit/Documents/local-llm/shared-local-llm.sh start qwen`. The backend must still boot when LLM endpoints are offline.

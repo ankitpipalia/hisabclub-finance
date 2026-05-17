@@ -28,6 +28,10 @@ async def promote_to_canonical(
     bank_name: str,
     account_type: str,
     account_masked: str | None,
+    *,
+    validation_status: str = "valid",
+    validation_errors: list[str] | None = None,
+    balance_walk_passed: bool | None = None,
 ) -> CanonicalTransaction:
     """Create or merge a canonical transaction from a parsed transaction.
 
@@ -51,6 +55,7 @@ async def promote_to_canonical(
             method,
         )
         await merge_source(db, existing, parsed_txn, confidence, method)
+        setattr(existing, "_hc_was_dedup_merge", True)
         return existing
 
     # Step 3: No duplicate — create new canonical
@@ -95,14 +100,31 @@ async def promote_to_canonical(
             user_id=user_id,
             account_masked=account_masked,
             transaction_date=parsed_txn.transaction_date,
-            amount=float(parsed_txn.amount),
+            amount=parsed_txn.amount,
             description=parsed_txn.description_raw,
         ),
         foreign_amount=parsed_txn.foreign_amount,
         foreign_currency=parsed_txn.foreign_currency,
+        extraction_source=_canonical_extraction_source(parsed_txn),
+        extraction_confidence=float(parsed_txn.confidence or 0.0),
+        source_statement_id=parsed_txn.statement_id,
+        source_page_number=1 if parsed_txn.statement_id else None,
+        source_char_offset=parsed_txn.line_number or 0,
+        source_evidence={
+            "source_type": parsed_txn.source_type,
+            "source_id": str(parsed_txn.source_id),
+            "statement_id": str(parsed_txn.statement_id) if parsed_txn.statement_id else "",
+            "description_raw": parsed_txn.description_raw,
+            "reference_number": parsed_txn.reference_number or "",
+            "extraction_method": parsed_txn.extraction_method,
+        },
+        validation_status=validation_status,
+        validation_errors=validation_errors or None,
+        balance_walk_passed=balance_walk_passed,
     )
     db.add(canonical)
     await db.flush()
+    setattr(canonical, "_hc_was_dedup_merge", False)
 
     # Link source
     source = TransactionSource(
@@ -114,4 +136,26 @@ async def promote_to_canonical(
     )
     db.add(source)
 
+    logger.info(
+        "Promoted parsed_txn %s to canonical %s with validation_status=%s",
+        parsed_txn.id,
+        canonical.id,
+        validation_status,
+    )
+
     return canonical
+
+
+def _canonical_extraction_source(parsed_txn: ParsedTransaction) -> str:
+    if parsed_txn.source_type == "sms":
+        return "sms"
+    if parsed_txn.source_type == "manual":
+        return "manual"
+    method = (parsed_txn.extraction_method or "").strip().lower()
+    if method == "vision":
+        return "llm_vision"
+    if method == "llm":
+        return "llm_text"
+    if method == "ocr":
+        return "ocr_llm"
+    return "template" if parsed_txn.source_type == "statement" else "manual"

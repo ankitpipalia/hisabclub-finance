@@ -31,23 +31,28 @@ This architecture is designed around five non-negotiable principles:
 
 ### 1.3 Current Implementation Notes
 
-- Current backend parsing flow is `native text -> selective OCR fallback -> parser/LLM extraction -> validation -> dedup/promotion`.
+- Current backend parsing flow is `native text -> selective OCR fallback when enabled -> parser/LLM extraction -> validation -> dedup/promotion`.
 - Savings/current statement validation now includes deterministic balance-walk checking before promotion/review gating.
-- OCR is intentionally page-selective so machine-readable PDFs do not pay the OCR cost.
-- OCR runtime is now live on the local `8095` endpoint.
+- OCR is intentionally page-selective so machine-readable PDFs do not pay the OCR cost, but local OCR/vision is feature-flagged off in the current single-GPU development profile.
+- The active primary local text runtime is `Qwen3.6-27B-Q5_K_S.gguf` on `http://127.0.0.1:8097/v1` with `LLM_STARTUP_VALIDATION=false` and `LLM_REQUIRED_FOR_BOOT=false`.
 - Local LLM access is now task-routed:
-  - primary `Qwen3-VL-8B` route for statement extraction
-  - shared local route for classification/extraction/review tasks
-  - OCR route for page transcription
-  - optional dedicated vision route for page-image statement extraction
-- Backend now runs with primary vision-led PDF-to-JSON extraction enabled against `Qwen3-VL-8B`.
-- Deterministic parser and text/OCR paths remain as fallback rather than being removed.
+  - primary Qwen3.6 text route for classification, extraction fallback, categorization, and review tasks
+  - optional OCR route for page transcription on `:8095`
+  - optional dedicated Qwen3-VL route for page-image statement extraction on `:8096`
+- Backend boot no longer depends on any LLM endpoint; LLM connectivity failures are handled lazily at job time.
+- Deterministic parser and text paths remain available when optional OCR/vision services are disabled.
 - PostgreSQL remains the correct persistence layer for this product because canonical promotion, dedup, review tasks, lineage, and auditability are transactional and relational.
 - Transaction dedup uses account-aware fingerprinting and same-direction matching to reduce cross-account false merges.
+- Canonical promotion now goes through the typed extraction layer:
+  - parser output is adapted to `RawTransaction`
+  - `validate_transaction()` normalizes date, amount, direction, and confidence status
+  - content-based `dedup_key` is written to `canonical_transactions`
+  - every promoted canonical row stores extraction source, confidence, statement/page/offset lineage, raw evidence, validation status, and balance-walk status
+  - low-confidence, AI-sourced, large, or balance-walk-problem transactions create `transaction_review` tasks
 - Sanitization preserves transaction references needed for reconciliation while masking explicit account/card identifiers.
 - Folder-import ingestion now commits incrementally per file and re-applies tenant context after commit so large recursive imports remain observable under RLS.
 - Knowledge ingestion commits before expensive statement parsing begins, which reduces long request-scoped transaction windows.
-- Real-data validation on `/home/ankit/Documents/FY24-25-Ankit-details` has already confirmed successful `Qwen3-VL` parsing for BOB savings, HDFC credit card, and ICICI savings statements.
+- Earlier real-data validation on `/home/ankit/Documents/FY24-25-Ankit-details` confirmed successful Qwen3-VL parsing for BOB savings, HDFC credit card, and ICICI savings statements; current runtime defaults prioritize Qwen3.6 text because it occupies most of the A5000 VRAM budget.
 - Phase 2 foundation is now implemented:
   - user profile/onboarding state on `users`
   - seeded `institutions`
@@ -90,6 +95,19 @@ This architecture is designed around five non-negotiable principles:
   - user edits from `user_overrides`
   - split lineage from `transaction_splits`
   - transaction sources now expose `statement_id` for direct jump back into statement review
+- Canonical transaction audit columns are now first-class:
+  - `extraction_source`
+  - `extraction_confidence`
+  - `source_statement_id`
+  - `source_page_number`
+  - `source_char_offset`
+  - `source_evidence`
+  - `dedup_key`
+  - `validation_status`
+  - `validation_errors`
+  - `balance_walk_passed`
+  - `review_task_id`
+  - override metadata
 - Net worth implementation posture:
   - historical balances are stored in `balance_snapshots`
   - parser ingestion upserts statement-derived snapshots at statement creation time

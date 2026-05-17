@@ -1,4 +1,50 @@
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
+
+_SHARED_LOCAL_LLM_ENV_PATH = Path("/home/ankit/Documents/local-llm/shared-local-llm.env")
+
+
+def _load_shared_local_llm_defaults() -> dict[str, str]:
+    if not _SHARED_LOCAL_LLM_ENV_PATH.exists():
+        return {}
+
+    resolved: dict[str, str] = {}
+    assignment_pattern = re.compile(r"^(?:export\s+)?([A-Z0-9_]+)=(.*)$")
+    expansion_pattern = re.compile(r"\$\{([^}]+)\}")
+
+    for raw_line in _SHARED_LOCAL_LLM_ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = assignment_pattern.match(line)
+        if not match:
+            continue
+        key, value = match.groups()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        value = expansion_pattern.sub(
+            lambda item: resolved.get(item.group(1), os.environ.get(item.group(1), "")),
+            value,
+        )
+        resolved[key] = value
+    return resolved
+
+
+_SHARED_LOCAL_LLM_DEFAULTS = _load_shared_local_llm_defaults()
+
+
+def _shared_local_llm_default(keys: str | tuple[str, ...], fallback: str) -> str:
+    for key in (keys,) if isinstance(keys, str) else keys:
+        if value := _SHARED_LOCAL_LLM_DEFAULTS.get(key):
+            return value
+    return fallback
 
 
 class Settings(BaseSettings):
@@ -32,18 +78,61 @@ class Settings(BaseSettings):
 
     # LLM
     llm_enabled: bool = False
-    llm_base_url: str = "http://localhost:8472/v1"
+    llm_base_url: str = Field(
+        default=_shared_local_llm_default(
+            ("LOCAL_LLM_QWEN_HOST_API_BASE", "LOCAL_LLM_TEXT_HOST_API_BASE"),
+            "http://127.0.0.1:8097/v1",
+        ),
+        validation_alias=AliasChoices(
+            "LLM_BASE_URL",
+            "LOCAL_LLM_API_BASE",
+            "LOCAL_LLM_QWEN_HOST_API_BASE",
+            "LOCAL_LLM_QWEN_DOCKER_API_BASE",
+            "LOCAL_LLM_TEXT_HOST_API_BASE",
+            "LOCAL_LLM_TEXT_DOCKER_API_BASE",
+        ),
+    )
     llm_api_key: str = ""
-    llm_model: str = "Qwen3.5-27B-Q3_K_M.gguf"
+    llm_model: str = Field(
+        default=_shared_local_llm_default(
+            ("LOCAL_LLM_QWEN_MODEL", "LOCAL_LLM_TEXT_MODEL"),
+            "Qwen3.6-27B-Q5_K_S.gguf",
+        ),
+        validation_alias=AliasChoices(
+            "LLM_MODEL",
+            "LOCAL_LLM_MODEL",
+            "LOCAL_LLM_QWEN_MODEL",
+            "LOCAL_LLM_TEXT_MODEL",
+        ),
+    )
+    llm_startup_validation: bool = False
+    llm_required_for_boot: bool = False
     llm_small_model: str = ""
     llm_large_model: str = ""
-    llm_runtime_label: str = "shared-local"
+    llm_runtime_label: str = "shared-local-llm"
     llm_router_enabled: bool = True
     llm_json_mode: bool = True
     llm_vision_enabled: bool = False
-    llm_vision_base_url: str = ""
+    llm_vision_base_url: str = Field(
+        default=_shared_local_llm_default(
+            "LOCAL_LLM_VISION_HOST_API_BASE",
+            "http://127.0.0.1:8096/v1",
+        ),
+        validation_alias=AliasChoices(
+            "LLM_VISION_BASE_URL",
+            "LOCAL_LLM_VISION_API_BASE",
+            "LOCAL_LLM_VISION_HOST_API_BASE",
+            "LOCAL_LLM_VISION_DOCKER_API_BASE",
+        ),
+    )
     llm_vision_api_key: str = ""
-    llm_vision_model: str = ""
+    llm_vision_model: str = Field(
+        default=_shared_local_llm_default(
+            "LOCAL_LLM_VISION_MODEL",
+            "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+        ),
+        validation_alias=AliasChoices("LLM_VISION_MODEL", "LOCAL_LLM_VISION_MODEL"),
+    )
     llm_vision_statement_extraction_enabled: bool = False
     llm_vision_statement_primary: bool = False
     llm_vision_render_dpi: int = 180
@@ -64,12 +153,19 @@ class Settings(BaseSettings):
     promotion_confidence_threshold: float = 0.75
     min_yield_rate_for_auto_promotion: float = 0.55
     require_cc_integrity_ok_for_auto_promotion: bool = False
+    sms_typed_validation_enabled: bool = False
+    extraction_unified_validation_enabled: bool = False
+    extraction_review_keeps_ambiguous_direction: bool = False
+    sanitizer_preserve_short_refs: bool = False
     category_web_lookup_enabled: bool = False
     category_web_lookup_timeout_sec: float = 5.0
 
     # OCR / vision extraction
     ocr_enabled: bool = False
-    ocr_base_url: str = "http://localhost:8095/v1"
+    ocr_base_url: str = Field(
+        default="http://127.0.0.1:8095/v1",
+        validation_alias=AliasChoices("OCR_BASE_URL", "LLM_OCR_BASE_URL"),
+    )
     ocr_api_key: str = ""
     ocr_model: str = "glm-4.1v-9b-thinking"
     ocr_render_dpi: int = 200
@@ -114,6 +210,14 @@ class Settings(BaseSettings):
 
     def parsed_local_llm_hosts(self) -> set[str]:
         return {h.strip().lower() for h in self.local_allowed_llm_hosts.split(",") if h.strip()}
+
+    @property
+    def text_llm_url(self) -> str:
+        return self.llm_base_url
+
+    @property
+    def vision_llm_url(self) -> str:
+        return self.llm_vision_base_url_resolved()
 
     def llm_vision_base_url_resolved(self) -> str:
         return self.llm_vision_base_url.strip() or self.llm_base_url

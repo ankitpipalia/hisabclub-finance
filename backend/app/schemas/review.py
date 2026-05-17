@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class ReviewTaskResponse(BaseModel):
     id: str
-    statement_id: str
+    statement_id: str | None
     task_type: str
     status: str
     reason_code: str
@@ -30,4 +30,9 @@ class ResolveReviewTaskResponse(BaseModel):
     task: ReviewTaskResponse
     promoted_count: int
     ignored_count: int
+    merged_count: int = 0
 
+
+class CorrectReviewTaskRequest(BaseModel):
+    corrections: dict
+    reason: str | None = None

@@ -289,6 +289,10 @@ class ApiClient {
     );
   }
 
+  async getUploadStatus(pdfId: string) {
+    return this.request<UploadStatusResponse>(`/upload/${pdfId}/status`);
+  }
+
   async getRecentUploads(limit: number = 20) {
     return this.request<UploadReviewItem[]>(`/upload/recent?limit=${limit}`);
   }
@@ -1369,6 +1373,17 @@ export interface BulkUploadResponse {
   duplicate_count: number;
   failed_count: number;
   items: BulkUploadResultItem[];
+}
+
+export interface UploadStatusResponse {
+  pdf_id: string;
+  document_id?: string | null;
+  status: string;
+  message: string;
+  statement_id?: string | null;
+  transaction_count?: number | null;
+  bank_name?: string | null;
+  error?: string | null;
 }
 
 export interface AssistantChatRequest {

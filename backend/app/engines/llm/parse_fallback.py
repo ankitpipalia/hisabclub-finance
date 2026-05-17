@@ -114,6 +114,8 @@ async def llm_parse_statement(
 
     merged_transactions: list[ExtractedTransaction] = []
     seen_keys: set[tuple[str, str, int, str]] = set()
+    failed_empty_chunks: list[int] = []
+    failed_schema_chunks: list[int] = []
 
     metadata_bank: str | None = None
     metadata_account_type: str | None = None
@@ -150,10 +152,12 @@ async def llm_parse_statement(
             model=model,
         )
         if not payload:
+            failed_empty_chunks.append(chunk.index + 1)
             continue
 
         parsed = _validate_payload(payload)
         if parsed is None:
+            failed_schema_chunks.append(chunk.index + 1)
             continue
 
         metadata_bank = metadata_bank or normalize_bank_hint(parsed.bank_name)
@@ -217,6 +221,15 @@ async def llm_parse_statement(
         account_type_hint=account_type_hint,
         extracted=metadata_account_type,
     )
+    chunk_warnings = []
+    failed_chunks = sorted(set(failed_empty_chunks + failed_schema_chunks))
+    if failed_chunks:
+        chunk_warnings.append(
+            "LLM extraction partial: "
+            f"{len(failed_chunks)}/{len(chunks)} chunks failed "
+            f"(indices: {failed_chunks})"
+        )
+
     return ExtractedStatement(
         bank_name=metadata_bank or bank_hint or "Unknown",
         account_type=inferred_account_type,
@@ -230,7 +243,15 @@ async def llm_parse_statement(
         warnings=[
             "Parsed by LLM fallback (iterative chunk mode).",
             f"Prompt version: {STATEMENT_EXTRACTION_PROMPT_VERSION}",
+            *chunk_warnings,
         ],
+        llm_chunk_errors={
+            "total": len(chunks),
+            "failed_empty": failed_empty_chunks,
+            "failed_schema": failed_schema_chunks,
+        }
+        if failed_chunks
+        else None,
     )
 
 
@@ -284,17 +305,25 @@ async def _tier2_table_mapping_extract(
     if not transactions:
         return None
 
+    metadata = await _tier2_extract_metadata(
+        client=client,
+        model=model,
+        bank_hint=bank_hint,
+        account_type_hint=account_type_hint,
+        sample_rows=table_rows[:60],
+    )
+
     return ExtractedStatement(
-        bank_name=normalize_bank_hint(bank_hint) or bank_hint or "Unknown",
+        bank_name=normalize_bank_hint(metadata.bank_name or bank_hint) or bank_hint or "Unknown",
         account_type=_normalize_account_type(
             account_type_hint=account_type_hint,
-            extracted="credit_card" if account_type_hint == "credit_card" else "savings",
+            extracted=metadata.account_type,
         ),
-        account_number_masked=None,
-        statement_period_start=None,
-        statement_period_end=None,
-        opening_balance=None,
-        closing_balance=None,
+        account_number_masked=metadata.account_number_masked,
+        statement_period_start=metadata.statement_period_start,
+        statement_period_end=metadata.statement_period_end,
+        opening_balance=metadata.opening_balance,
+        closing_balance=metadata.closing_balance,
         transactions=transactions,
         parser_id="llm_tier2_column_map",
         warnings=[
@@ -302,6 +331,106 @@ async def _tier2_table_mapping_extract(
             f"Prompt version: {STATEMENT_EXTRACTION_PROMPT_VERSION}",
         ],
     )
+
+
+@dataclass(frozen=True)
+class _Tier2Metadata:
+    bank_name: str | None
+    account_type: str | None
+    account_number_masked: str | None
+    statement_period_start: date | None
+    statement_period_end: date | None
+    opening_balance: float | None
+    closing_balance: float | None
+
+
+async def _tier2_extract_metadata(
+    *,
+    client: LLMClient,
+    model: str | None,
+    bank_hint: str | None,
+    account_type_hint: str | None,
+    sample_rows: list[str],
+) -> _Tier2Metadata:
+    preview = "\n".join(sample_rows[:20])
+    payload = await client.chat_json(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Extract statement metadata from table headers and first rows. "
+                    "Return strict JSON only. Never guess values not present in the text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Bank hint: {bank_hint or 'none'}\n"
+                    f"Account type hint: {account_type_hint or 'none'}\n"
+                    "Extract these fields from the table header/first rows only:\n"
+                    '{"bank_name":str|null,"account_type":"credit_card|savings|current|null",'
+                    '"account_number_masked":str|null,'
+                    '"statement_period_start":str|null,"statement_period_end":str|null,'
+                    '"opening_balance":number|null,"closing_balance":number|null}\n\n'
+                    f"{preview}"
+                ),
+            },
+        ],
+        schema={
+            "type": "object",
+            "properties": {
+                "bank_name": {"type": ["string", "null"]},
+                "account_type": {"type": ["string", "null"]},
+                "account_number_masked": {"type": ["string", "null"]},
+                "statement_period_start": {"type": ["string", "null"]},
+                "statement_period_end": {"type": ["string", "null"]},
+                "opening_balance": {"type": ["number", "null"]},
+                "closing_balance": {"type": ["number", "null"]},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        max_tokens=220,
+        temperature=0.0,
+        timeout_sec=settings.llm_table_map_timeout_sec,
+        max_attempts=settings.llm_table_map_max_attempts,
+        model=model,
+    )
+    if not payload:
+        return _Tier2Metadata(
+            bank_name=None,
+            account_type=None,
+            account_number_masked=None,
+            statement_period_start=None,
+            statement_period_end=None,
+            opening_balance=None,
+            closing_balance=None,
+        )
+    try:
+        bn = _string_or_none(payload.get("bank_name"))
+        at = _string_or_none(payload.get("account_type"))
+        normalized_at = _normalize_account_type(account_type_hint=account_type_hint, extracted=at)
+        if at == "unknown":
+            normalized_at = None
+        return _Tier2Metadata(
+            bank_name=bn,
+            account_type=normalized_at if at and at != "unknown" else None,
+            account_number_masked=_string_or_none(payload.get("account_number_masked")),
+            statement_period_start=_parse_date(_string_or_none(payload.get("statement_period_start"))),
+            statement_period_end=_parse_date(_string_or_none(payload.get("statement_period_end"))),
+            opening_balance=_safe_float(payload.get("opening_balance")),
+            closing_balance=_safe_float(payload.get("closing_balance")),
+        )
+    except Exception:
+        return _Tier2Metadata(
+            bank_name=None,
+            account_type=None,
+            account_number_masked=None,
+            statement_period_start=None,
+            statement_period_end=None,
+            opening_balance=None,
+            closing_balance=None,
+        )
 
 
 async def _infer_table_column_mapping(
@@ -417,7 +546,6 @@ def _map_row_to_transaction(
         amount = abs(credit_val)
         direction = "credit"
     elif amount_val and amount_val > 0:
-        amount = abs(amount_val)
         dir_text = _cell(cols, mapping.direction_col) or ""
         indicator = is_credit_indicator(dir_text) if dir_text else None
         if indicator is None:
@@ -426,7 +554,9 @@ def _map_row_to_transaction(
                 indicator = True
             elif " DR" in upper_line or " DEBIT" in upper_line:
                 indicator = False
-        direction = "credit" if indicator is True else "debit"
+        if indicator is None:
+            return None
+        direction = "credit" if indicator else "debit"
     if amount is None or amount <= 0 or direction is None:
         return None
 
