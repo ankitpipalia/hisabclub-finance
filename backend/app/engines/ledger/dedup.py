@@ -251,6 +251,7 @@ async def merge_source(
         is_primary=False,
     )
     db.add(source)
+    await db.flush()
 
     logger.info(
         "Merged source: parsed_txn %s -> canonical %s (confidence=%.2f, method=%s)",

@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import { getToken, setToken, clearToken, getServerUrl } from '../utils/storage';
 import { DEFAULT_API_URL } from '../utils/constants';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -39,8 +40,29 @@ import type {
 
 let _onUnauthorized: (() => void) | null = null;
 
+// Track whether a 401-driven logout is in-flight so we don't fire the callback
+// once per parallel request when the token expires mid-session.
+let _unauthorizedInFlight = false;
+
 export function setOnUnauthorized(cb: () => void) {
   _onUnauthorized = cb;
+}
+
+async function handleUnauthorized() {
+  if (_unauthorizedInFlight) {
+    return;
+  }
+  _unauthorizedInFlight = true;
+  try {
+    await clearToken();
+    _onUnauthorized?.();
+  } finally {
+    // Allow a future 401 to drive logout again once we're back at the
+    // login screen and a new token has been issued.
+    setTimeout(() => {
+      _unauthorizedInFlight = false;
+    }, 1500);
+  }
 }
 
 export class ApiError extends Error {
@@ -55,8 +77,14 @@ export class ApiError extends Error {
 
 async function getBaseUrl(): Promise<string> {
   const url = await getServerUrl();
-  // Return stored URL only if it's non-empty, otherwise use default
-  return (url && url.trim()) ? url.trim() : DEFAULT_API_URL;
+  const raw = (url && url.trim()) ? url.trim() : DEFAULT_API_URL;
+  // Android emulator can't reach the host machine via "localhost" — it must
+  // use the special-cased 10.0.2.2 alias. iOS simulator and physical devices
+  // resolve localhost normally. We only rewrite when running on Android.
+  if (Platform.OS === 'android') {
+    return raw.replace(/(https?:\/\/)(localhost|127\.0\.0\.1)/i, '$110.0.2.2');
+  }
+  return raw;
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -86,8 +114,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   if (response.status === 401) {
-    await clearToken();
-    _onUnauthorized?.();
+    await handleUnauthorized();
     throw new ApiError(401, 'Unauthorized');
   }
 
@@ -134,8 +161,7 @@ async function requestBlob(path: string, options: RequestInit = {}): Promise<Blo
   }
   const response = await fetch(`${baseUrl}${path}`, { ...options, headers });
   if (response.status === 401) {
-    await clearToken();
-    _onUnauthorized?.();
+    await handleUnauthorized();
     throw new ApiError(401, 'Unauthorized');
   }
   if (!response.ok) {

@@ -26,7 +26,25 @@
     },
     "ios": {
       "bundleIdentifier": "com.hisabclub.app",
-      "supportsTablet": false
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "HisabClub needs access to your photo library so you can upload statement PDFs and receipts.",
+        "NSDocumentsFolderUsageDescription": "HisabClub uses your Documents folder to pick statement PDFs you've saved locally.",
+        "NSCameraUsageDescription": "HisabClub can scan receipts and statement pages with your camera (optional).",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSExceptionDomains": {
+            "localhost": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSIncludesSubdomains": true
+            },
+            "127.0.0.1": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSIncludesSubdomains": true
+            }
+          }
+        }
+      }
     },
     "plugins": [
       [
@@ -38,7 +56,13 @@
         }
       ],
       "expo-sharing",
-      "expo-secure-store",
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": "Allow HisabClub to use Face ID to unlock saved credentials."
+        }
+      ],
       "expo-font"
     ],
     "platforms": [

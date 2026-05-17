@@ -175,6 +175,8 @@ async def resolve_review_task(
     else:
         statement.parse_status = "partial"
 
+    await db.flush()
+
     return ResolveReviewTaskResponse(
         task=_to_review_task_response(task),
         promoted_count=promoted,

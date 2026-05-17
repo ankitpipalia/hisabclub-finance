@@ -135,6 +135,7 @@ async def promote_to_canonical(
         is_primary=True,
     )
     db.add(source)
+    await db.flush()
 
     logger.info(
         "Promoted parsed_txn %s to canonical %s with validation_status=%s",

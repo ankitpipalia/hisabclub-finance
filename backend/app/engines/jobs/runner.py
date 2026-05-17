@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.database import async_session_factory
@@ -223,7 +226,7 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
     )
 
     if (statement.transaction_count or 0) > 0:
-        await reclassify_transfer_payments_for_user(
+        transfer_result = await reclassify_transfer_payments_for_user(
             db=db,
             user_id=job.user_id,
             days=3650,
@@ -231,12 +234,26 @@ async def _process_parse_statement_job(*, db: AsyncSession, job: ExtractionJob) 
             max_gap_days=7,
             use_llm=True,
         )
-        await reconcile_upi_failures_for_user(
+        logger.info(
+            "transfer_reclassify user=%s scanned=%s matched_pairs=%s updated=%s",
+            job.user_id,
+            getattr(transfer_result, "scanned", "?"),
+            getattr(transfer_result, "matched_pairs", "?"),
+            getattr(transfer_result, "updated_transactions", "?"),
+        )
+        upi_result = await reconcile_upi_failures_for_user(
             db=db,
             user_id=job.user_id,
             days=3650,
             max_gap_days=3,
             limit=10000,
+        )
+        logger.info(
+            "upi_reconcile user=%s scanned=%s matched_pairs=%s updated=%s",
+            job.user_id,
+            getattr(upi_result, "scanned", "?"),
+            getattr(upi_result, "matched_pairs", "?"),
+            getattr(upi_result, "updated_transactions", "?"),
         )
 
     await _upsert_statement_period_coverage(

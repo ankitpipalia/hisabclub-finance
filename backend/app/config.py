@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     extraction_unified_validation_enabled: bool = False
     extraction_review_keeps_ambiguous_direction: bool = False
     sanitizer_preserve_short_refs: bool = False
+    # Vision-LLM transactions are weighted lower than text-LLM/template output
+    # because vision OCR has a higher hallucination rate on tabular data.
+    # Multiplier in [0, 1]; 0.85 means vision confidences are reduced ~15%.
+    vision_confidence_multiplier: float = 1.0
     category_web_lookup_enabled: bool = False
     category_web_lookup_timeout_sec: float = 5.0
 

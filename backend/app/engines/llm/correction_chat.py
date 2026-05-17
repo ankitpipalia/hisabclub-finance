@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.engines.llm.client import LLMClient
+from app.engines.llm.client import LLMClient  # noqa: F401  (public re-export)
+from app.engines.llm.factory import build_client_for_task
 from app.engines.llm.sanitizer import sanitize_for_llm
 from app.models.canonical_transaction import CanonicalTransaction
 from app.models.category import Category
 from app.models.user_override import UserOverride
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_ACTIONS = {
     "set_category",
@@ -154,27 +160,39 @@ async def run_transaction_correction_chat(
         "transaction_candidates": candidates,
     }
 
-    from app.engines.llm.factory import build_client_for_task
-
     client, _ = build_client_for_task(task="correction_chat")
-    llm_payload = await client.chat_json(
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a finance correction assistant. Convert user correction intent into "
-                    "safe action plans over provided transaction candidates."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(prompt_payload, ensure_ascii=True),
-            },
-        ],
-        schema=schema,
-        temperature=0.0,
-        max_tokens=2400,
-    )
+    try:
+        llm_payload = await client.chat_json(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a finance correction assistant. Convert user correction intent into "
+                        "safe action plans over provided transaction candidates."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(prompt_payload, ensure_ascii=True),
+                },
+            ],
+            schema=schema,
+            temperature=0.0,
+            max_tokens=2400,
+        )
+    except (asyncio.TimeoutError, httpx.HTTPError, httpx.TimeoutException) as exc:
+        # Local LLM may be down, slow, or rejecting requests. Surface a clean
+        # 200 response with a warning instead of bubbling up as a 500 — the
+        # caller already treats the empty case as "try again".
+        logger.warning("correction_chat LLM call failed: %s", exc)
+        return CorrectionChatResult(
+            reply="Local LLM is unavailable right now. Please try again in a moment.",
+            proposed_count=0,
+            applied_count=0,
+            skipped_count=0,
+            warnings=[f"LLM call failed: {type(exc).__name__}"],
+            actions=[],
+        )
     if not llm_payload:
         return CorrectionChatResult(
             reply="Local LLM did not return a usable correction plan. Please try again.",
@@ -219,14 +237,18 @@ async def run_transaction_correction_chat(
             txn=txn,
             category_by_name=category_by_name,
         )
-        if planned is None:
+        if planned is None or "_skip_reason" in planned:
             skipped_count += 1
+            skip_reason = (
+                planned.get("_skip_reason") if planned else None
+            ) or "Missing or invalid action fields."
+            warnings.append(f"Action {idx + 1}: {skip_reason}")
             action_results.append(
                 {
                     "action": action,
                     "transaction_id": txn_id,
                     "status": "skipped",
-                    "detail": "Missing or invalid action fields.",
+                    "detail": skip_reason,
                 }
             )
             continue
@@ -299,7 +321,13 @@ def _plan_action(
         category_name = str(raw.get("category_name") or "").strip()
         category = category_by_name.get(category_name.lower())
         if category is None:
-            return None
+            return {
+                "_skip_reason": (
+                    f"Unknown category '{category_name}'."
+                    if category_name
+                    else "Missing category_name."
+                ),
+            }
         return {
             "action": action,
             "transaction_id": txn_id,
@@ -312,7 +340,13 @@ def _plan_action(
     if action == "set_nature":
         nature = str(raw.get("transaction_nature") or "").strip().lower()
         if nature not in _ALLOWED_NATURES:
-            return None
+            return {
+                "_skip_reason": (
+                    f"Disallowed nature '{nature}'."
+                    if nature
+                    else "Missing transaction_nature."
+                ),
+            }
         return {
             "action": action,
             "transaction_id": txn_id,
@@ -325,7 +359,7 @@ def _plan_action(
     if action == "set_notes":
         notes = str(raw.get("notes") or "").strip()
         if not notes:
-            return None
+            return {"_skip_reason": "Empty notes."}
         return {
             "action": action,
             "transaction_id": txn_id,

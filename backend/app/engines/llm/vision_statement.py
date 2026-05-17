@@ -236,6 +236,9 @@ def _to_transaction(raw: dict) -> ExtractedTransaction | None:
             ),
             amount=amount,
         )
+    # Vision OCR has materially higher hallucination rate than text extraction;
+    # apply the configured discount so downstream review-gates fire earlier.
+    confidence = _apply_vision_confidence_discount(confidence)
     return ExtractedTransaction(
         transaction_date=txn_date,
         posting_date=None,
@@ -247,6 +250,13 @@ def _to_transaction(raw: dict) -> ExtractedTransaction | None:
         ),
         confidence=max(0.0, min(1.0, confidence)),
     )
+
+
+def _apply_vision_confidence_discount(confidence: float) -> float:
+    from app.config import settings
+
+    multiplier = max(0.0, min(1.0, settings.vision_confidence_multiplier))
+    return confidence * multiplier
 
 
 def _default_transaction_confidence(

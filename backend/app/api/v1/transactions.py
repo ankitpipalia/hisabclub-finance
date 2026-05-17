@@ -438,7 +438,10 @@ async def update_transaction(
     result = await db.execute(
         select(CanonicalTransaction, Category.name.label("category_name"))
         .outerjoin(Category, CanonicalTransaction.category_id == Category.id)
-        .where(CanonicalTransaction.id == txn_id)
+        .where(
+            CanonicalTransaction.id == txn_id,
+            CanonicalTransaction.user_id == user.id,
+        )
     )
     row = result.one()
     return _txn_to_response(row[0], category_name=row[1])
@@ -486,7 +489,10 @@ async def bulk_update_transactions(
         await db.execute(
             select(CanonicalTransaction, Category.name.label("category_name"))
             .outerjoin(Category, CanonicalTransaction.category_id == Category.id)
-            .where(CanonicalTransaction.id.in_([txn.id for txn in txns]))
+            .where(
+                CanonicalTransaction.user_id == user.id,
+                CanonicalTransaction.id.in_([txn.id for txn in txns]),
+            )
             .order_by(CanonicalTransaction.transaction_date.desc())
         )
     ).all()
@@ -636,7 +642,10 @@ async def split_transaction(
         await db.execute(
             select(CanonicalTransaction, Category.name.label("category_name"))
             .outerjoin(Category, CanonicalTransaction.category_id == Category.id)
-            .where(CanonicalTransaction.id.in_([child.id for child in created_children]))
+            .where(
+                CanonicalTransaction.user_id == user.id,
+                CanonicalTransaction.id.in_([child.id for child in created_children]),
+            )
             .order_by(CanonicalTransaction.created_at.asc())
         )
     ).all()
@@ -644,7 +653,10 @@ async def split_transaction(
         await db.execute(
             select(CanonicalTransaction, Category.name.label("category_name"))
             .outerjoin(Category, CanonicalTransaction.category_id == Category.id)
-            .where(CanonicalTransaction.id == txn.id)
+            .where(
+                CanonicalTransaction.id == txn.id,
+                CanonicalTransaction.user_id == user.id,
+            )
         )
     ).one()
 

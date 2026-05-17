@@ -12,6 +12,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.ledger.fingerprint import (
@@ -38,6 +39,11 @@ class StatementDuplicateError(ValueError):
     """Raised when a semantic duplicate statement already exists for the user."""
 
     pass
+
+
+def _is_statement_fingerprint_violation(exc: IntegrityError) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    return "uq_statements_active_fingerprint" in message or "statement_fingerprint" in message
 
 
 @dataclass
@@ -848,7 +854,20 @@ async def parse_statement(
             transaction_count=extracted_count,
         )
         db.add(statement)
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            # Concurrent upload race: a sibling worker just committed a
+            # statement with the same (user_id, statement_fingerprint) while
+            # this one was still in-flight. The partial unique index on
+            # statements rejects it. Translate to the user-facing duplicate
+            # error so the caller can surface a clean 4xx instead of a 500.
+            if semantic_fingerprint and _is_statement_fingerprint_violation(exc):
+                raise StatementDuplicateError(
+                    "This statement already exists "
+                    "(semantic duplicate detected for bank/account/period)."
+                ) from exc
+            raise
         await upsert_statement_balance_snapshot(
             db,
             user_id=user_id,

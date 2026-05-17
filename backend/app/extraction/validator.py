@@ -5,6 +5,7 @@ import re
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+from app.config import settings
 from app.engines.parser.amount_utils import parse_indian_date
 from app.extraction.models import (
     BalanceWalkProblem,
@@ -99,9 +100,12 @@ def validate_transaction(
         errors.append("description_required")
 
     all_errors = errors + soft_errors
+    # Honor the runtime-tunable promotion threshold so operators can dial trust
+    # up or down per environment without redeploying. Clamp into a safe range.
+    confidence_floor = max(0.0, min(1.0, settings.promotion_confidence_threshold))
     if errors:
         status = ValidationStatus.INVALID
-    elif raw.confidence < 0.75:
+    elif raw.confidence < confidence_floor:
         status = ValidationStatus.LOW_CONFIDENCE
     elif soft_errors:
         status = ValidationStatus.NEEDS_REVIEW
