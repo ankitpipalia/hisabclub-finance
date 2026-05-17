@@ -99,7 +99,7 @@ export default function UploadPage() {
   );
 
   useEffect(() => {
-    const intervals: NodeJS.Timeout[] = [];
+    const intervals: ReturnType<typeof setInterval>[] = [];
     for (const notification of notifications) {
       if (notification.status === 'reviewing' || notification.status === 'queued') {
         const poll = async () => {
