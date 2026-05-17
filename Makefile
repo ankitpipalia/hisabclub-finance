@@ -1,4 +1,4 @@
-.PHONY: dev dev-backend dev-frontend migrate seed backfill-knowledge test lint docker-up docker-down \
+.PHONY: dev dev-backend dev-frontend migrate seed backfill-knowledge test test-cov test-frontend test-mobile e2e-real lint docker-up docker-down \
 	local-services local-stack local-check android-install android-reverse mobile-dev
 
 VENV = .venv/bin
@@ -33,6 +33,17 @@ test:
 
 test-cov:
 	cd backend && $(VENV)/pytest --cov=app --cov-report=html
+
+# Real-data E2E (LOCAL ONLY — touches real PII)
+e2e-real:
+	cd backend && RUN_REAL_E2E=1 $(VENV)/pytest tests/test_e2e -v
+
+# Frontend / mobile test entry points
+test-frontend:
+	cd frontend && npm test
+
+test-mobile:
+	cd mobile && npm test
 
 # Linting
 lint:
