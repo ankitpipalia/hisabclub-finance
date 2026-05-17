@@ -496,6 +496,39 @@ class ApiClient {
     return this.request<RecurringPattern[]>('/insights/recurring');
   }
 
+  async getAnomalies(params?: {
+    window_days?: number;
+    history_days?: number;
+    sigma?: number;
+    limit?: number;
+  }) {
+    const query = new URLSearchParams();
+    if (params?.window_days) query.set('window_days', String(params.window_days));
+    if (params?.history_days) query.set('history_days', String(params.history_days));
+    if (params?.sigma) query.set('sigma', String(params.sigma));
+    if (params?.limit) query.set('limit', String(params.limit));
+    const qs = query.toString();
+    return this.request<AnomalyResponse>(`/insights/anomalies${qs ? `?${qs}` : ''}`);
+  }
+
+  async listTransferMatches(params?: { status?: string; limit?: number }) {
+    const query = new URLSearchParams();
+    if (params?.status) query.set('status', params.status);
+    if (params?.limit) query.set('limit', String(params.limit));
+    const qs = query.toString();
+    return this.request<TransferMatchListResponse>(`/transfers${qs ? `?${qs}` : ''}`);
+  }
+
+  async resolveTransferMatch(
+    matchId: string,
+    decision: 'confirm' | 'reject',
+  ) {
+    return this.request<TransferMatch>(`/transfers/${matchId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ decision }),
+    });
+  }
+
   async getNetWorthOverview(months: number = 12) {
     return this.request<NetWorthOverview>(`/net-worth/overview?months=${months}`);
   }
@@ -1148,6 +1181,51 @@ export interface RecurringPattern {
   next_expected: string | null;
   category_name: string | null;
   is_active: boolean;
+}
+
+export interface AnomalyTransaction {
+  transaction_id: string;
+  transaction_date: string;
+  amount: string;
+  merchant: string;
+  category_id: string | null;
+  category_name: string | null;
+  bank_name: string | null;
+  reason: 'category_spike' | 'new_large_merchant';
+  detail: string;
+  expected_mean: string | null;
+  expected_max: string | null;
+  deviation_ratio: number | null;
+}
+
+export interface AnomalyResponse {
+  items: AnomalyTransaction[];
+  total: number;
+}
+
+export interface TransferLeg {
+  transaction_id: string;
+  transaction_date: string;
+  amount: string;
+  bank_name: string | null;
+  account_masked: string | null;
+  direction: string;
+  description: string;
+}
+
+export interface TransferMatch {
+  id: string;
+  match_type: string;
+  confidence: number;
+  resolution_status: 'auto' | 'confirmed' | 'rejected' | string;
+  matched_at: string;
+  debit_leg: TransferLeg;
+  credit_leg: TransferLeg;
+}
+
+export interface TransferMatchListResponse {
+  items: TransferMatch[];
+  total: number;
 }
 
 export interface ReconciliationTransaction {
