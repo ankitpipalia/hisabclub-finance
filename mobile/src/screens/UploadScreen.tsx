@@ -15,6 +15,7 @@ import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import AnimatedOrbs from '../components/AnimatedOrbs';
 import BrandMark from '../components/BrandMark';
 import FadeInView from '../components/FadeInView';
+import { useToast } from '../components/ui/Toast';
 
 type DocumentTypeHint = (typeof DOCUMENT_TYPE_OPTIONS)[number]['value'];
 
@@ -42,6 +43,7 @@ export default function UploadScreen() {
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const cardAnim = useRef(new Animated.Value(0)).current;
+  const toast = useToast();
 
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
   const [showPasswordFor, setShowPasswordFor] = useState<Record<string, boolean>>({});
@@ -155,7 +157,7 @@ export default function UploadScreen() {
         setSelectedFiles((current) => [...current, ...next]);
       }
     } catch {
-      Alert.alert('Error', 'Failed to pick document');
+      toast.error('Failed to pick document');
     }
   };
 
@@ -171,7 +173,7 @@ export default function UploadScreen() {
 
   const handleUpload = async () => {
     if (selectedFiles.length === 0) {
-      Alert.alert('Error', 'Please select at least one supported file first');
+      toast.warning('Please select at least one supported file first');
       return;
     }
 

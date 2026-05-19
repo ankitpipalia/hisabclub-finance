@@ -20,6 +20,7 @@ import EmptyState from '../components/EmptyState';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import FadeInView from '../components/FadeInView';
 import AnimatedOrbs from '../components/AnimatedOrbs';
+import { useToast } from '../components/ui/Toast';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -74,6 +75,7 @@ export default function TransactionsScreen() {
   const { colors } = useAppTheme();
   const COLORS = colors;
   const styles = useMemo(() => createStyles(COLORS), [COLORS]);
+  const toast = useToast();
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterType>('all');
@@ -229,7 +231,7 @@ export default function TransactionsScreen() {
     setBulkBusy(true);
     try {
       const result = await api.bulkUpdateTransactions(payload);
-      Alert.alert('Bulk update complete', `Updated ${result.updated_count} transaction(s).`);
+      toast.success(`Bulk update complete — ${result.updated_count} transaction(s)`);
       clearSelection();
       handleRefresh();
     } catch (err: any) {
