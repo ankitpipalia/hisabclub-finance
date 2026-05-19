@@ -72,7 +72,8 @@ class TaxInputs:
     deduction_80gg: Decimal = _ZERO  # rent paid w/o HRA (caller computes the min formula)
     deduction_80tta_or_ttb: Decimal = _ZERO  # caller picks the right one based on age
     home_loan_interest_self: Decimal = _ZERO  # for self-occupied; capped per FY
-    home_loan_interest_letout: Decimal = _ZERO  # uncapped (lossable up to ₹2L/yr against other heads)
+    # uncapped (lossable up to ₹2L/yr against other heads):
+    home_loan_interest_letout: Decimal = _ZERO
 
     # Flags
     is_salaried: bool = True  # toggles the std deduction lookup
@@ -96,8 +97,10 @@ class RegimeResult:
     # Build-up
     gross_total_income: Decimal
     standard_deduction: Decimal
-    section_24b_deduction: Decimal  # home-loan interest applied here (against rental + other heads)
-    chapter_via_deduction: Decimal  # 80C + 80CCD(1B) + 80D + 80E + 80G + 80GG + 80TTA/B (+ 80CCD(2) under new)
+    # home-loan interest applied here (against rental + other heads):
+    section_24b_deduction: Decimal
+    # 80C + 80CCD(1B) + 80D + 80E + 80G + 80GG + 80TTA/B (+ 80CCD(2) under new):
+    chapter_via_deduction: Decimal
     taxable_income: Decimal
 
     # Tax stack

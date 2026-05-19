@@ -18,7 +18,6 @@ from app.schemas.tax import (
     WhatIfScenarioRequest,
 )
 
-
 _FAKE_USER = SimpleNamespace(id=uuid.uuid4(), email="t@example.com")
 
 

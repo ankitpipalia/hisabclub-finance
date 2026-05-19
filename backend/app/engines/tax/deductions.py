@@ -13,7 +13,7 @@ Two distinct services:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Mapping
 
@@ -139,7 +139,10 @@ def compute_utilization(
             remaining=max(
                 _ZERO, limits.sec_24b_self_occupied - _claim("home_loan_interest_self")
             ),
-            description="Home-loan interest on self-occupied house, capped at ₹2L (old regime only).",
+            description=(
+                "Home-loan interest on self-occupied house, capped at "
+                "₹2L (old regime only)."
+            ),
         )
     )
     return UtilizationReport(fy=fy, items=tuple(items))
