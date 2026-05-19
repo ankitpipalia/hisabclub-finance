@@ -259,6 +259,36 @@ async def test_large_ai_transaction_without_balance_walk_still_gets_review_task(
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_direction_promotes_as_reviewable_debit_by_default():
+    """Phase 1: `extraction_review_keeps_ambiguous_direction` default is now True,
+    so ambiguous CR/DR rows route to review (with assumed debit + cr_dr_resolved
+    flag) instead of being silently dropped. No flag override required."""
+    db = _FakeDb()
+    result = await promote_validated_batch(
+        raw_txns=[_raw(txn_type="NEFT", description="NEFT TRANSFER")],
+        user_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        statement_id=uuid.uuid4(),
+        statement_period=StatementPeriod(date(2024, 1, 1), date(2024, 1, 31)),
+        opening_balance=None,
+        closing_balance=None,
+        bank_name="BOB",
+        account_type="savings",
+        account_masked="XX1234",
+        db=db,
+    )
+
+    canonical = next(obj for obj in db.added if isinstance(obj, CanonicalTransaction))
+    reviews = [obj for obj in db.added if isinstance(obj, ReviewTask)]
+    assert len(result.promoted) == 1
+    assert canonical.direction == "debit"
+    assert canonical.validation_status == ValidationStatus.NEEDS_REVIEW.value
+    assert "cr_dr_resolved" in canonical.validation_errors
+    assert len(reviews) == 1
+    assert "needs_review" in reviews[0].payload_json["reasons"]
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_direction_promotes_as_reviewable_debit_when_flag_enabled(monkeypatch):
     monkeypatch.setattr(
         "app.extraction.promoter.settings.extraction_review_keeps_ambiguous_direction",

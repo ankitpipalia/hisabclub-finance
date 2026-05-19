@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { BudgetWithSpent, Category } from '../api/client';
 import { Plus, Trash2, Wallet } from 'lucide-react';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 const formatAmount = (amount: number) =>
   new Intl.NumberFormat('en-IN', {
@@ -32,6 +33,7 @@ export default function BudgetsPage() {
   const [formAmount, setFormAmount] = useState('');
   const [formPeriod, setFormPeriod] = useState('monthly');
   const [submitting, setSubmitting] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   const fetchData = async () => {
     try {
@@ -72,8 +74,14 @@ export default function BudgetsPage() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this budget?')) return;
+  const requestDelete = (id: string) => setPendingDeleteId(id);
+
+  const cancelDelete = () => setPendingDeleteId(null);
+
+  const confirmDelete = async () => {
+    const id = pendingDeleteId;
+    if (!id) return;
+    setPendingDeleteId(null);
     try {
       await api.deleteBudget(id);
       setBudgets((prev) => prev.filter((b) => b.id !== id));
@@ -215,7 +223,7 @@ export default function BudgetsPage() {
                 </div>
 
                 <div className="hc-inline-actions" style={{ marginTop: '0.35rem' }}>
-                  <button onClick={() => handleDelete(budget.id)} className="hc-btn hc-btn-ghost" title="Delete budget">
+                  <button onClick={() => requestDelete(budget.id)} className="hc-btn hc-btn-ghost" title="Delete budget">
                     <Trash2 size={14} strokeWidth={1.5} />
                     Delete
                   </button>
@@ -225,6 +233,16 @@ export default function BudgetsPage() {
           })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        title="Delete this budget?"
+        description="The budget will be removed permanently. Spending history is unaffected."
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </div>
   );
 }

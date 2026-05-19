@@ -153,9 +153,15 @@ class Settings(BaseSettings):
     promotion_confidence_threshold: float = 0.75
     min_yield_rate_for_auto_promotion: float = 0.55
     require_cc_integrity_ok_for_auto_promotion: bool = False
-    sms_typed_validation_enabled: bool = False
+    # Phase 1 (master_plan_2026.md §26): the legacy SMS bypass has been removed
+    # and typed validation is the only ingestion path. This flag is retained
+    # only as a kill-switch; flipping it to False does not restore the bypass.
+    sms_typed_validation_enabled: bool = True
     extraction_unified_validation_enabled: bool = False
-    extraction_review_keeps_ambiguous_direction: bool = False
+    # Phase 1: ambiguous CR/DR rows route to review with assumed debit instead
+    # of disappearing silently. Disabling this flag drops them again — only
+    # intended for emergency rollback during ingestion incidents.
+    extraction_review_keeps_ambiguous_direction: bool = True
     sanitizer_preserve_short_refs: bool = False
     # Vision-LLM transactions are weighted lower than text-LLM/template output
     # because vision OCR has a higher hallucination rate on tabular data.
