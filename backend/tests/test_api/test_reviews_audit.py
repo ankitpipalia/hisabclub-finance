@@ -16,7 +16,6 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-
 from app.api.v1 import reviews as reviews_api
 from app.schemas.review import ResolveReviewTaskRequest
 
