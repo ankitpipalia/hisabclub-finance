@@ -192,6 +192,57 @@ def _std_deduction_for(inputs: TaxInputs, regime: RegimeRules) -> Decimal:
     return _ZERO
 
 
+def _compute_marginal_relief_for_regime(
+    *,
+    regime: RegimeRules,
+    total_income: Decimal,
+    base_tax: Decimal,
+    surcharge: Decimal,
+    inputs: TaxInputs,
+) -> Decimal:
+    """Marginal-relief wrapper that supplies the tax-at-threshold figure.
+
+    We re-apply the regime's slabs to the threshold itself to get the
+    reference tax used by `compute_marginal_relief`. This makes the relief
+    computation independent of which surcharge bracket the taxpayer crossed.
+    """
+    from app.engines.tax.marginal_relief import (
+        _threshold_just_crossed,
+        compute_marginal_relief,
+    )
+
+    if surcharge <= _ZERO:
+        return _ZERO
+    crossed = _threshold_just_crossed(total_income, regime.surcharge_brackets)
+    if crossed is None:
+        return _ZERO
+    threshold = crossed.threshold
+    slabs = _slabs_for_age(inputs, regime)
+    tax_at_threshold, _bd = _apply_slabs(threshold, slabs)
+    return compute_marginal_relief(
+        total_income=total_income,
+        base_tax=base_tax,
+        surcharge=surcharge,
+        regime=regime,
+        tax_at_threshold=tax_at_threshold,
+    )
+
+
+def _slabs_for_age(inputs: TaxInputs, regime: RegimeRules) -> tuple[SlabBracket, ...]:
+    """Pick the right slab table for the taxpayer's age.
+
+    Old regime uses age-stratified slabs (senior 60-79 has ₹3L exemption,
+    super-senior ≥80 has ₹5L exemption). New regime is age-agnostic. If a
+    senior/super-senior table is not configured on the regime (e.g. new
+    regime), fall back to the general `slabs`.
+    """
+    if inputs.is_super_senior and regime.slabs_super_senior is not None:
+        return regime.slabs_super_senior
+    if inputs.is_senior and regime.slabs_senior is not None:
+        return regime.slabs_senior
+    return regime.slabs
+
+
 def _gross_total_income(inputs: TaxInputs) -> Decimal:
     return (
         inputs.gross_salary
@@ -263,7 +314,7 @@ def compute_old_regime(fy: str, inputs: TaxInputs) -> RegimeResult:
     # slab purposes only if the caller has included them in gross income.
     # Convention: caller passes equity STCG/LTCG ONLY via capital_gain_equity_*;
     # they are NOT part of other_income/etc. So `taxable` excludes them.
-    slab_tax, slab_breakdown = _apply_slabs(taxable, regime.slabs)
+    slab_tax, slab_breakdown = _apply_slabs(taxable, _slabs_for_age(inputs, regime))
     special_tax, special_notes = _equity_special_rate_tax(inputs, rules)
     base_tax = slab_tax + special_tax
 
@@ -273,6 +324,18 @@ def compute_old_regime(fy: str, inputs: TaxInputs) -> RegimeResult:
     tax_after_rebate = max(_ZERO, base_tax - rebate)
 
     surcharge = _apply_surcharge(tax_after_rebate, gti, regime)
+    # Marginal relief: when total income just crosses a surcharge threshold,
+    # the extra tax cannot exceed the extra income. Compute relief against the
+    # tax that *would* have applied at exactly the threshold.
+    relief = _compute_marginal_relief_for_regime(
+        regime=regime,
+        total_income=gti,
+        base_tax=tax_after_rebate,
+        surcharge=surcharge,
+        inputs=inputs,
+    )
+    if relief > _ZERO:
+        surcharge = max(_ZERO, surcharge - relief)
     cess = _round_inr((tax_after_rebate + surcharge) * regime.cess_rate)
     total = _round_inr(tax_after_rebate + surcharge + cess)
 
@@ -353,7 +416,7 @@ def compute_new_regime(fy: str, inputs: TaxInputs) -> RegimeResult:
 
     taxable = max(_ZERO, gti - std_ded - sec_24b - chapter_via_allowed)
 
-    slab_tax, slab_breakdown = _apply_slabs(taxable, regime.slabs)
+    slab_tax, slab_breakdown = _apply_slabs(taxable, _slabs_for_age(inputs, regime))
     special_tax, special_notes = _equity_special_rate_tax(inputs, rules)
     base_tax = slab_tax + special_tax
 
@@ -361,6 +424,15 @@ def compute_new_regime(fy: str, inputs: TaxInputs) -> RegimeResult:
     tax_after_rebate = max(_ZERO, base_tax - rebate)
 
     surcharge = _apply_surcharge(tax_after_rebate, gti, regime)
+    relief = _compute_marginal_relief_for_regime(
+        regime=regime,
+        total_income=gti,
+        base_tax=tax_after_rebate,
+        surcharge=surcharge,
+        inputs=inputs,
+    )
+    if relief > _ZERO:
+        surcharge = max(_ZERO, surcharge - relief)
     cess = _round_inr((tax_after_rebate + surcharge) * regime.cess_rate)
     total = _round_inr(tax_after_rebate + surcharge + cess)
 

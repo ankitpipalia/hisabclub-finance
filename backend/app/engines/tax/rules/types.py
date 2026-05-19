@@ -100,7 +100,12 @@ class SectionLimits:
 
 @dataclass(frozen=True)
 class RegimeRules:
-    """Per-regime slabs + std deduction + 87A."""
+    """Per-regime slabs + std deduction + 87A.
+
+    `slabs_senior` and `slabs_super_senior` are old-regime-only overrides. The
+    new regime does not differentiate by age; both age-override fields are
+    `None` for the new-regime instance and the resolver falls back to `slabs`.
+    """
 
     slabs: tuple[SlabBracket, ...]
     standard_deduction_salary: Decimal
@@ -108,6 +113,15 @@ class RegimeRules:
     rebate_87a: Rebate87A
     surcharge_brackets: tuple[SurchargeBracket, ...]
     cess_rate: Decimal  # Health & Education Cess on (tax + surcharge)
+
+    # Old-regime senior (age 60-79) and super-senior (age ≥80) slabs.
+    # Source: https://incometaxindia.gov.in/charts%20%20tables/tax-rates.htm
+    # Senior: 0-3L nil, 3-5L 5%, 5-10L 20%, >10L 30% (₹3L exemption).
+    # Super-senior: 0-5L nil, 5-10L 20%, >10L 30% (₹5L exemption).
+    # Set to None on the new-regime instance; the resolver picks the regular
+    # slabs in that case.
+    slabs_senior: tuple[SlabBracket, ...] | None = None
+    slabs_super_senior: tuple[SlabBracket, ...] | None = None
 
 
 @dataclass(frozen=True)

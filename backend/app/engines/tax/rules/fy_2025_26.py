@@ -46,6 +46,19 @@ _OLD_REGIME_SLABS = (
     SlabBracket(upto=_INF, rate=Decimal("0.30")),
 )
 
+# Senior (60-79) and super-senior (≥80) old-regime slabs (unchanged from earlier FYs).
+_OLD_REGIME_SLABS_SENIOR = (
+    SlabBracket(upto=Decimal("300000"), rate=Decimal("0.00")),
+    SlabBracket(upto=Decimal("500000"), rate=Decimal("0.05")),
+    SlabBracket(upto=Decimal("1000000"), rate=Decimal("0.20")),
+    SlabBracket(upto=_INF, rate=Decimal("0.30")),
+)
+_OLD_REGIME_SLABS_SUPER_SENIOR = (
+    SlabBracket(upto=Decimal("500000"), rate=Decimal("0.00")),
+    SlabBracket(upto=Decimal("1000000"), rate=Decimal("0.20")),
+    SlabBracket(upto=_INF, rate=Decimal("0.30")),
+)
+
 _OLD_SURCHARGE = (
     SurchargeBracket(threshold=Decimal("5000000"), rate=Decimal("0.10")),
     SurchargeBracket(threshold=Decimal("10000000"), rate=Decimal("0.15")),
@@ -107,6 +120,8 @@ RULES = TaxRules(
         rebate_87a=_OLD_REBATE_87A,
         surcharge_brackets=_OLD_SURCHARGE,
         cess_rate=_CESS_RATE,
+        slabs_senior=_OLD_REGIME_SLABS_SENIOR,
+        slabs_super_senior=_OLD_REGIME_SLABS_SUPER_SENIOR,
     ),
     new_regime=RegimeRules(
         slabs=_NEW_REGIME_SLABS,

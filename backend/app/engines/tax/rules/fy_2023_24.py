@@ -33,10 +33,25 @@ _NEW_REGIME_SLABS = (
     SlabBracket(upto=_INF, rate=Decimal("0.30")),
 )
 
-# ----- Old regime slabs -----
+# ----- Old regime slabs (general, age < 60) -----
 _OLD_REGIME_SLABS = (
     SlabBracket(upto=Decimal("250000"), rate=Decimal("0.00")),
     SlabBracket(upto=Decimal("500000"), rate=Decimal("0.05")),
+    SlabBracket(upto=Decimal("1000000"), rate=Decimal("0.20")),
+    SlabBracket(upto=_INF, rate=Decimal("0.30")),
+)
+
+# Old regime senior (60-79): 0-3L nil, 3-5L 5%, 5-10L 20%, >10L 30%.
+_OLD_REGIME_SLABS_SENIOR = (
+    SlabBracket(upto=Decimal("300000"), rate=Decimal("0.00")),
+    SlabBracket(upto=Decimal("500000"), rate=Decimal("0.05")),
+    SlabBracket(upto=Decimal("1000000"), rate=Decimal("0.20")),
+    SlabBracket(upto=_INF, rate=Decimal("0.30")),
+)
+
+# Old regime super-senior (≥80): 0-5L nil, 5-10L 20%, >10L 30%.
+_OLD_REGIME_SLABS_SUPER_SENIOR = (
+    SlabBracket(upto=Decimal("500000"), rate=Decimal("0.00")),
     SlabBracket(upto=Decimal("1000000"), rate=Decimal("0.20")),
     SlabBracket(upto=_INF, rate=Decimal("0.30")),
 )
@@ -101,6 +116,8 @@ RULES = TaxRules(
         rebate_87a=_OLD_REBATE_87A,
         surcharge_brackets=_OLD_SURCHARGE,
         cess_rate=_CESS_RATE,
+        slabs_senior=_OLD_REGIME_SLABS_SENIOR,
+        slabs_super_senior=_OLD_REGIME_SLABS_SUPER_SENIOR,
     ),
     new_regime=RegimeRules(
         slabs=_NEW_REGIME_SLABS,
