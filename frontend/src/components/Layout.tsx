@@ -23,6 +23,7 @@ import {
 import { api } from '../api/client';
 import ThemeModeSelect from './ThemeModeSelect';
 import AppLogo from './AppLogo';
+import { FYSelector } from './FYSelector';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -88,16 +89,19 @@ export default function Layout() {
           <AppLogo size={18} />
           HisabClub
         </div>
-        <button
-          type="button"
-          className="hc-btn hc-btn-ghost"
-          onClick={() => setMobileNavOpen((v) => !v)}
-          aria-label={mobileNavOpen ? 'Close navigation menu' : 'Open navigation menu'}
-          aria-expanded={mobileNavOpen}
-        >
-          {mobileNavOpen ? <X size={18} /> : <Menu size={18} />}
-          Menu
-        </button>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <FYSelector />
+          <button
+            type="button"
+            className="hc-btn hc-btn-ghost"
+            onClick={() => setMobileNavOpen((v) => !v)}
+            aria-label={mobileNavOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-expanded={mobileNavOpen}
+          >
+            {mobileNavOpen ? <X size={18} /> : <Menu size={18} />}
+            Menu
+          </button>
+        </div>
       </header>
 
       {mobileNavOpen && (
@@ -165,6 +169,9 @@ export default function Layout() {
         </nav>
 
         <div className="app-sidebar-footer">
+          <div style={{ marginBottom: '0.75rem' }}>
+            <FYSelector />
+          </div>
           <ThemeModeSelect />
           <button
             type="button"
