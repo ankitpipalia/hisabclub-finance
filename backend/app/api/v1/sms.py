@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.dependencies import CurrentUser, DbSession
@@ -194,4 +195,33 @@ async def sms_batch_import(
         duplicates=duplicates,
         errors=errors,
         details=details,
+    )
+
+
+class SmsMatchResponse(BaseModel):
+    fy: str | None
+    matched_pairs: int
+    sms_unmatched: int
+
+
+@router.post("/match", response_model=SmsMatchResponse)
+async def sms_match_to_statements(
+    user: CurrentUser,
+    db: DbSession,
+    fy: str | None = None,
+):
+    """Run the SMS↔statement matcher for the user.
+
+    If `fy` is provided (e.g. "FY24-25"), restrict to that window. Otherwise
+    matches across the entire user history. Useful as a manual trigger from
+    the dashboard; also scheduled daily by the job runner.
+    """
+    from app.engines.ledger.sms_statement_match import match_sms_to_statements
+
+    report = await match_sms_to_statements(db, user.id, fy)
+    await db.commit()
+    return SmsMatchResponse(
+        fy=fy,
+        matched_pairs=report.matched_pairs,
+        sms_unmatched=report.sms_unmatched,
     )
