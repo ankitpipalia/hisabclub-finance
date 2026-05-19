@@ -164,14 +164,51 @@ async def _portal_for(
     return row.extracted_json or {}
 
 
+async def _line_items_present(
+    db: AsyncSession, user_id: uuid.UUID, fy: str
+) -> dict[str, bool]:
+    """Whether any line-item rows exist for the user+FY by source table.
+
+    Used by `run_all_reconciliations` to choose between the line-item
+    reconciler (preferred when rows exist) and the aggregate-only fallback.
+    """
+    from sqlalchemy import select
+
+    from app.models.tax_line_items import (
+        AisLineItem,
+        Form16Item,
+        Form26AsLineItem,
+    )
+
+    async def _has(model) -> bool:
+        row = (
+            await db.execute(
+                select(model.id).where(
+                    model.user_id == user_id, model.fy == fy
+                ).limit(1)
+            )
+        ).first()
+        return row is not None
+
+    return {
+        "ais": await _has(AisLineItem),
+        "form_26as": await _has(Form26AsLineItem),
+        "form_16": await _has(Form16Item),
+    }
+
+
 async def run_all_reconciliations(
     db: AsyncSession, user_id: uuid.UUID, financial_year: str
 ) -> list[ReconciliationReport]:
     """Assemble inputs + run Form-16, 26AS-TDS, 26AS-self-paid, AIS reconcilers.
 
-    Returns one report per source. Reports for sources without any data are
-    still included (with `matched=missing_in_ledger=missing_in_portal=0`),
-    so the UI can render an empty state per source.
+    Sprint B.3: when line-item tables are populated for the user+FY, the
+    line-item reconcilers run instead of the aggregate-only path. The
+    response shape (`ReconciliationReport`) is unchanged so the UI doesn't
+    care which path produced the results.
+
+    Reports for sources without any data are still included so the UI can
+    render an empty state per source.
     """
     start, end = _fy_window(financial_year)
 
@@ -179,38 +216,58 @@ async def run_all_reconciliations(
     ais = await _portal_for(db, user_id, financial_year, "ais")
     form_26as = await _portal_for(db, user_id, financial_year, "form_26as")
 
-    # Ledger inputs
+    # Ledger inputs (only needed for the aggregate path)
     salary_credits = await _ledger_salary_credits(db, user_id, start, end)
     tax_debits = await _ledger_tax_debits(db, user_id, start, end)
     ledger_salary, ledger_interest, ledger_dividend = await _ledger_aggregate_by_nature(
         db, user_id, start, end
     )
 
+    line_items = await _line_items_present(db, user_id, financial_year)
     reports: list[ReconciliationReport] = []
 
-    # Form-16 reconcile
-    reports.append(
-        reconcile_form16(
-            fy=financial_year,
-            form16_gross_salary=_read_decimal(
-                f16, "gross_salary", "salary", "income_from_salary"
-            ),
-            ledger_salary_credits=salary_credits,
-            employer_name_hint=(f16 or {}).get("employer_name"),
+    # ----- Form-16 -----
+    if line_items["form_16"]:
+        from app.engines.tax.reconcile.line_item import (
+            reconcile_form16_line_items,
         )
-    )
 
-    # 26AS TDS aggregate
-    reports.append(
-        reconcile_26as_tds(
-            fy=financial_year,
-            portal_tds_total=_read_decimal(form_26as, "tds_total", "tds"),
-            form16_tds_total=_read_decimal(f16, "tds_total", "tds"),
-            interest_cert_tds_total=None,
+        reports.append(
+            await reconcile_form16_line_items(db, user_id, financial_year)
         )
-    )
+    else:
+        reports.append(
+            reconcile_form16(
+                fy=financial_year,
+                form16_gross_salary=_read_decimal(
+                    f16, "gross_salary", "salary", "income_from_salary"
+                ),
+                ledger_salary_credits=salary_credits,
+                employer_name_hint=(f16 or {}).get("employer_name"),
+            )
+        )
 
-    # 26AS self-paid challans
+    # ----- 26AS TDS -----
+    if line_items["form_26as"]:
+        from app.engines.tax.reconcile.line_item import (
+            reconcile_form26as_line_items,
+        )
+
+        reports.append(
+            await reconcile_form26as_line_items(db, user_id, financial_year)
+        )
+    else:
+        reports.append(
+            reconcile_26as_tds(
+                fy=financial_year,
+                portal_tds_total=_read_decimal(form_26as, "tds_total", "tds"),
+                form16_tds_total=_read_decimal(f16, "tds_total", "tds"),
+                interest_cert_tds_total=None,
+            )
+        )
+
+    # ----- 26AS self-paid challans (always aggregate; line-item form
+    # already merges Part-C rows into the 26AS report above) -----
     reports.append(
         reconcile_26as_self_paid_challans(
             fy=financial_year,
@@ -221,20 +278,27 @@ async def run_all_reconciliations(
         )
     )
 
-    # AIS buckets
-    reports.append(
-        reconcile_ais_buckets(
-            fy=financial_year,
-            ais_salary=_read_decimal(ais, "salary", "salary_received"),
-            ais_interest=_read_decimal(ais, "interest", "interest_income"),
-            ais_dividend=_read_decimal(ais, "dividend", "dividend_income"),
-            ais_securities_sold=_read_decimal(
-                ais, "securities_sold", "sale_of_securities"
-            ),
-            ledger_salary=ledger_salary,
-            ledger_interest=ledger_interest,
-            ledger_dividend=ledger_dividend,
+    # ----- AIS -----
+    if line_items["ais"]:
+        from app.engines.tax.reconcile.line_item import reconcile_ais_line_items
+
+        reports.append(
+            await reconcile_ais_line_items(db, user_id, financial_year)
         )
-    )
+    else:
+        reports.append(
+            reconcile_ais_buckets(
+                fy=financial_year,
+                ais_salary=_read_decimal(ais, "salary", "salary_received"),
+                ais_interest=_read_decimal(ais, "interest", "interest_income"),
+                ais_dividend=_read_decimal(ais, "dividend", "dividend_income"),
+                ais_securities_sold=_read_decimal(
+                    ais, "securities_sold", "sale_of_securities"
+                ),
+                ledger_salary=ledger_salary,
+                ledger_interest=ledger_interest,
+                ledger_dividend=ledger_dividend,
+            )
+        )
 
     return reports

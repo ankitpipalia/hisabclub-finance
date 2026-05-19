@@ -200,3 +200,20 @@ class ReconciliationBundleResponse(BaseModel):
     fy: str
     reports: list[ReconciliationReportResponse] = Field(default_factory=list)
 
+
+# -------- Sprint B.4: missing-document checklist -------- #
+
+
+class ChecklistItemResponse(BaseModel):
+    kind: str
+    severity: str  # "block_filing" | "warning" | "info"
+    title: str
+    detail: str
+    cta_link: str | None = None
+    evidence_count: int = 0
+
+
+class ChecklistBundleResponse(BaseModel):
+    fy: str
+    items: list[ChecklistItemResponse] = Field(default_factory=list)
+

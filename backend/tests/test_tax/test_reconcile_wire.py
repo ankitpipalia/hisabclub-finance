@@ -34,6 +34,11 @@ class _ScalarOneOrNoneResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def first(self):
+        # SQLAlchemy's `.first()` returns a row tuple or None. For our
+        # existence checks we just care about non-None.
+        return (self._value,) if self._value is not None else None
+
 
 class _QueuedDb:
     def __init__(self, responses):
@@ -147,6 +152,9 @@ async def test_get_reconciliation_bundle_assembles_four_reports(monkeypatch):
     # 4) salary credits query
     # 5) tax debits query
     # 6) aggregate query (salary/interest/dividend)
+    # 7-9) Sprint B.3: line-item existence checks (ais / form_26as / form_16).
+    #     This test simulates the aggregate fallback path so all three are empty.
+    _empty_first = _ScalarOneOrNoneResult(None)
     db = _QueuedDb(
         [
             _ScalarOneOrNoneResult(form16_row),
@@ -155,6 +163,9 @@ async def test_get_reconciliation_bundle_assembles_four_reports(monkeypatch):
             all_txns_a,
             all_txns_b,
             all_txns_c,
+            _empty_first,
+            _empty_first,
+            _empty_first,
         ]
     )
 

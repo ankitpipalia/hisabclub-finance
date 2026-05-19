@@ -42,6 +42,8 @@ from app.engines.tax.verification import cross_verify_tax
 from app.models.document_artifact import DocumentArtifact
 from app.models.tax_portal_data import TaxPortalData
 from app.schemas.tax import (
+    ChecklistBundleResponse,
+    ChecklistItemResponse,
     DeductionUtilizationItem,
     DeductionUtilizationResponse,
     ItrRecommendationInputs,
@@ -641,4 +643,68 @@ async def get_reconciliation_bundle(
             )
             for report in reports
         ],
+    )
+
+
+@router.get("/checklist/{financial_year}", response_model=ChecklistBundleResponse)
+async def get_tax_checklist(
+    financial_year: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Missing-document checklist for ITR preparation.
+
+    Inspects uploaded portal docs + line items + statement coverage and
+    returns the gaps the user needs to close. Severity levels:
+     - block_filing: cannot file accurately without this
+     - warning: affects reconciliation match rate
+     - info: nice-to-have for completeness
+    """
+    from app.engines.tax.checklist import build_checklist
+
+    response = await build_checklist(db, user.id, financial_year)
+    return ChecklistBundleResponse(
+        fy=response.fy,
+        items=[
+            ChecklistItemResponse(
+                kind=item.kind,
+                severity=item.severity,
+                title=item.title,
+                detail=item.detail,
+                cta_link=item.cta_link,
+                evidence_count=item.evidence_count,
+            )
+            for item in response.items
+        ],
+    )
+
+
+
+@router.get("/export/ca-pack/{financial_year}")
+async def get_ca_pack(
+    financial_year: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """CA hand-off pack — streams a ZIP with summary, ledger, reconciliation,
+    documents index, and assumptions."""
+    from fastapi.responses import Response
+
+    from app.engines.tax.export.ca_pack import build_ca_pack
+
+    try:
+        pack = await build_ca_pack(db, user.id, financial_year)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    return Response(
+        content=pack.content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{pack.filename}"'
+            ),
+        },
     )
