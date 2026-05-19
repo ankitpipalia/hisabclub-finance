@@ -706,6 +706,60 @@ class ApiClient {
     return this.request<TaxVerificationCheck[]>(`/tax/discrepancies/${encodeURIComponent(financialYear)}`);
   }
 
+  // ─── Phase 2 tax engine (master_plan_2026.md §10) ───
+  async compareTaxRegime(fy: string, inputs: TaxRegimeInputs) {
+    return this.request<TaxRegimeComparison>(
+      `/tax/regime/compare?fy=${encodeURIComponent(fy)}`,
+      { method: 'POST', body: JSON.stringify(inputs) },
+    );
+  }
+
+  async getDeductionUtilization(
+    fy: string,
+    claims: Partial<{
+      deduction_80c: string;
+      deduction_80ccd_1b: string;
+      deduction_80d_self: string;
+      deduction_80d_parents: string;
+      deduction_80e: string;
+      deduction_80tta_or_ttb: string;
+      home_loan_interest_self: string;
+      is_senior: boolean;
+    }> = {},
+  ) {
+    const params = new URLSearchParams({ fy });
+    Object.entries(claims).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) params.set(k, String(v));
+    });
+    return this.request<DeductionUtilizationResponse>(
+      `/tax/deductions/utilization?${params.toString()}`,
+    );
+  }
+
+  async recommendItrForm(inputs: ItrRecommendationInputs) {
+    return this.request<ItrRecommendation>('/tax/itr/recommend', {
+      method: 'POST',
+      body: JSON.stringify(inputs),
+    });
+  }
+
+  async runWhatIf(req: TaxWhatIfRequest) {
+    return this.request<TaxWhatIfResponse>('/tax/optimizer/whatif', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async getTaxReconciliation(fy: string) {
+    return this.request<TaxReconciliationBundle>(
+      `/tax/reconciliation/${encodeURIComponent(fy)}`,
+    );
+  }
+
+  async getSupportedFys() {
+    return this.request<string[]>('/tax/rules/supported');
+  }
+
   // ─── Budgets ───
   async getBudgets() {
     const res = await this.request<{ items: BudgetWithSpent[]; total: number }>('/budgets');
@@ -1563,6 +1617,142 @@ export interface TaxPortalUploadResult {
   document_type: string;
   financial_year: string | null;
   message: string;
+}
+
+// ---- Phase 2 tax engine types (master_plan_2026.md §10) ---- //
+
+export interface TaxRegimeInputs {
+  gross_salary?: string;
+  interest_income?: string;
+  dividend_income?: string;
+  rental_income_net?: string;
+  other_income?: string;
+  capital_gain_equity_stcg?: string;
+  capital_gain_equity_ltcg?: string;
+  capital_gain_other?: string;
+  deduction_80c?: string;
+  deduction_80ccd_1b?: string;
+  deduction_80ccd_2?: string;
+  deduction_80d_self?: string;
+  deduction_80d_parents?: string;
+  deduction_80e?: string;
+  deduction_80g?: string;
+  deduction_80gg?: string;
+  deduction_80tta_or_ttb?: string;
+  home_loan_interest_self?: string;
+  home_loan_interest_letout?: string;
+  is_salaried?: boolean;
+  is_pensioner?: boolean;
+  is_senior?: boolean;
+}
+
+export interface TaxRegimeResult {
+  regime: 'old' | 'new';
+  fy: string;
+  gross_total_income: string;
+  standard_deduction: string;
+  section_24b_deduction: string;
+  chapter_via_deduction: string;
+  taxable_income: string;
+  tax_on_slabs: string;
+  tax_on_special_rate_income: string;
+  base_tax: string;
+  rebate_87a: string;
+  tax_after_rebate: string;
+  surcharge: string;
+  cess: string;
+  total_tax: string;
+  notes: string[];
+}
+
+export interface TaxRegimeComparison {
+  fy: string;
+  old: TaxRegimeResult;
+  new: TaxRegimeResult;
+  recommendation: 'old' | 'new' | 'neutral';
+  delta: string;
+  sources: string[];
+}
+
+export interface DeductionUtilizationItem {
+  section: string;
+  cap: string | null;
+  claimed: string;
+  remaining: string | null;
+  description: string;
+}
+
+export interface DeductionUtilizationResponse {
+  fy: string;
+  items: DeductionUtilizationItem[];
+}
+
+export interface ItrRecommendationInputs {
+  total_income: string;
+  has_business_income?: boolean;
+  opted_into_presumptive_44ad_44ada?: boolean;
+  has_capital_gains_non_112a_carveout?: boolean;
+  has_more_than_one_house_property?: boolean;
+  has_brought_forward_house_property_loss?: boolean;
+  has_foreign_asset_or_income?: boolean;
+  is_director_or_holds_unlisted_shares?: boolean;
+  agricultural_income?: string;
+  is_resident?: boolean;
+}
+
+export interface ItrRecommendation {
+  form: 'ITR-1' | 'ITR-2' | 'ITR-3' | 'ITR-4';
+  reasons: string[];
+  blockers_for_itr1: string[];
+}
+
+export interface TaxWhatIfRequest {
+  fy: string;
+  baseline: TaxRegimeInputs;
+  scenario_80c?: string;
+  scenario_80ccd_1b?: string;
+  scenario_80d_self?: string;
+  scenario_80d_parents?: string;
+  scenario_80e?: string;
+  scenario_80g?: string;
+  scenario_80tta_or_ttb?: string;
+  scenario_home_loan_interest_self?: string;
+}
+
+export interface TaxWhatIfResponse {
+  fy: string;
+  baseline: TaxRegimeComparison;
+  scenario: TaxRegimeComparison;
+  saving_old: string;
+  saving_new: string;
+}
+
+export interface TaxReconciliationLine {
+  kind: 'matched' | 'missing_in_ledger' | 'missing_in_portal' | 'amount_mismatch';
+  label: string;
+  portal_amount: string | null;
+  ledger_amount: string | null;
+  delta: string | null;
+  portal_date: string | null;
+  ledger_canonical_id: string | null;
+  notes: string;
+}
+
+export interface TaxReconciliationReport {
+  fy: string;
+  source: string;
+  matched: number;
+  missing_in_ledger: number;
+  missing_in_portal: number;
+  amount_mismatch: number;
+  total_portal_amount: string;
+  total_ledger_amount: string;
+  lines: TaxReconciliationLine[];
+}
+
+export interface TaxReconciliationBundle {
+  fy: string;
+  reports: TaxReconciliationReport[];
 }
 
 export interface BalanceSnapshot {

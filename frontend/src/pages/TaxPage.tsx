@@ -9,6 +9,7 @@ import type {
   TaxVerificationResult,
 } from '../api/client';
 import { ShieldAlert, Link2, RefreshCw } from 'lucide-react';
+import RegimeComparator from '../components/tax/RegimeComparator';
 
 const formatAmount = (amount: number) =>
   new Intl.NumberFormat('en-IN', {
@@ -151,6 +152,8 @@ export default function TaxPage() {
           </div>
         </div>
       </section>
+
+      <RegimeComparator fy={selectedFy} />
 
       {loading && <div className="hc-panel">Loading tax and reconciliation insights...</div>}
 
