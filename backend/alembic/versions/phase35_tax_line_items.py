@@ -26,8 +26,9 @@ from __future__ import annotations
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "phase35_tax_line_items"
 down_revision: Union[str, None] = "phase3_review_nullable_statement"
@@ -81,10 +82,19 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
     op.create_index("ix_ais_line_items_user_fy", "ais_line_items", ["user_id", "fy"])
-    op.create_index(
-        "ix_ais_line_items_idempotency",
-        "ais_line_items",
-        ["user_id", "fy", "category", "deductor_pan", "amount"],
+    op.execute(
+        """
+        CREATE UNIQUE INDEX uq_ais_line_items_idempotency
+        ON ais_line_items (
+            user_id,
+            fy,
+            category,
+            COALESCE(sub_category, ''),
+            COALESCE(deductor_pan, ''),
+            COALESCE(info_source, ''),
+            amount
+        )
+        """
     )
     _enable_rls("ais_line_items")
 
@@ -111,10 +121,19 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
     op.create_index("ix_form26as_line_items_user_fy", "form26as_line_items", ["user_id", "fy"])
-    op.create_index(
-        "ix_form26as_line_items_idempotency",
-        "form26as_line_items",
-        ["user_id", "fy", "deductor_tan", "section", "amount_tds"],
+    op.execute(
+        """
+        CREATE UNIQUE INDEX uq_form26as_line_items_idempotency
+        ON form26as_line_items (
+            user_id,
+            fy,
+            part,
+            COALESCE(deductor_tan, ''),
+            COALESCE(section, ''),
+            COALESCE(amount_tds, 0),
+            COALESCE(amount_credit, 0)
+        )
+        """
     )
     _enable_rls("form26as_line_items")
 
@@ -138,10 +157,17 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
     op.create_index("ix_form16_items_user_fy", "form16_items", ["user_id", "fy"])
-    op.create_index(
-        "ix_form16_items_idempotency",
-        "form16_items",
-        ["user_id", "fy", "employer_tan", "head"],
+    op.execute(
+        """
+        CREATE UNIQUE INDEX uq_form16_items_idempotency
+        ON form16_items (
+            user_id,
+            fy,
+            COALESCE(employer_tan, ''),
+            COALESCE(employer_name, ''),
+            head
+        )
+        """
     )
     _enable_rls("form16_items")
 

@@ -8,6 +8,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+
 from app.engines.ledger.sms_statement_match import (
     _AMOUNT_TOLERANCE,
     match_sms_to_statements,
@@ -21,9 +22,11 @@ def _canonical(
     txn_date: date,
     account_masked: str = "XX1234",
     direction: str = "debit",
+    parsed_txn_id: uuid.UUID | None = None,
 ):
     return SimpleNamespace(
         id=uuid.uuid4(),
+        parsed_txn_id=parsed_txn_id or uuid.uuid4(),
         amount=Decimal(amount),
         transaction_date=txn_date,
         account_masked=account_masked,
@@ -52,6 +55,9 @@ class _ListExecResult:
     def first(self):
         return self._items[0] if self._items else None
 
+    def scalar_one_or_none(self):
+        return self._items[0] if self._items else None
+
 
 class _Db:
     def __init__(self, canonicals):
@@ -59,13 +65,24 @@ class _Db:
         self.added = []
         self.flush_count = 0
         # The matcher's first execute() returns the canonical pool; subsequent
-        # ones check for existing TransactionSource rows (we return empty).
+        # ones load the SMS ParsedTransaction source and check existing links.
         self._first_call = True
+        self._post_pool_calls = 0
 
     async def execute(self, *_args, **_kwargs):
         if self._first_call:
             self._first_call = False
             return _ScalarsAllResult(self.canonicals)
+        self._post_pool_calls += 1
+        if self._post_pool_calls % 2 == 1:
+            sms = next(
+                (
+                    row for row in self.canonicals
+                    if getattr(row, "extraction_source", "") == "sms"
+                ),
+                None,
+            )
+            return _ListExecResult([sms.parsed_txn_id] if sms else [])
         return _ListExecResult([])
 
     def add(self, obj):
@@ -97,6 +114,7 @@ async def test_sms_matches_statement_within_3_days_and_amount_tolerance():
     assert report.matches[0].sms_canonical_id == sms.id
     assert report.matches[0].statement_canonical_id == statement.id
     assert report.matches[0].date_gap_days == 1
+    assert db.added[0].parsed_txn_id == sms.parsed_txn_id
 
 
 @pytest.mark.asyncio

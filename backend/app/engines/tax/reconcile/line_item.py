@@ -92,23 +92,23 @@ async def _ais_unmatched_lines(
     return list(rows)
 
 
-async def _already_matched(
+async def _existing_match_canonical_id(
     db: AsyncSession,
     *,
     user_id: uuid.UUID,
     source_table: str,
     source_row_id: uuid.UUID,
-) -> bool:
+) -> uuid.UUID | None:
     row = (
         await db.execute(
-            select(TaxReconciliationMatch.id).where(
+            select(TaxReconciliationMatch.canonical_transaction_id).where(
                 TaxReconciliationMatch.user_id == user_id,
                 TaxReconciliationMatch.source_table == source_table,
                 TaxReconciliationMatch.source_row_id == source_row_id,
             ).limit(1)
         )
-    ).first()
-    return row is not None
+    ).scalar_one_or_none()
+    return row
 
 
 def _bucket_category(canonical: CanonicalTransaction) -> str | None:
@@ -150,12 +150,14 @@ async def reconcile_ais_line_items(
     amount_mismatch = 0
 
     for line in lines:
-        if await _already_matched(
+        existing_match_id = await _existing_match_canonical_id(
             db,
             user_id=user_id,
             source_table="ais_line_items",
             source_row_id=line.id,
-        ):
+        )
+        if existing_match_id is not None:
+            matched_canonical_ids.add(existing_match_id)
             matched += 1
             continue
 
@@ -358,12 +360,12 @@ async def reconcile_form16_line_items(
         if _within_tolerance(salary_total_portal, salary_total_ledger):
             matched = 1
             for sal_line in salary_lines:
-                if await _already_matched(
+                if await _existing_match_canonical_id(
                     db,
                     user_id=user_id,
                     source_table="form16_items",
                     source_row_id=sal_line.id,
-                ):
+                ) is not None:
                     continue
                 # Best-effort: match against the largest single credit.
                 largest = max(salary_credits, key=lambda c: Decimal(str(c.amount)))

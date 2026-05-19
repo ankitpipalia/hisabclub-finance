@@ -80,10 +80,30 @@ async def _candidates(
     return (await db.execute(stmt)).scalars().all()
 
 
+async def _sms_parsed_source_id(
+    db: AsyncSession, sms_canonical_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Return the parsed SMS source attached to the SMS canonical row.
+
+    SMS rows are promoted through the normal parsed->canonical path, so the
+    durable link should point to that ParsedTransaction rather than writing a
+    TransactionSource with parsed_txn_id=NULL.
+    """
+    row = (
+        await db.execute(
+            select(TransactionSource.parsed_txn_id)
+            .where(TransactionSource.canonical_txn_id == sms_canonical_id)
+            .order_by(TransactionSource.is_primary.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row
+
+
 async def _existing_source_link(
-    db: AsyncSession, canonical_id: uuid.UUID
+    db: AsyncSession, canonical_id: uuid.UUID, parsed_txn_id: uuid.UUID
 ) -> bool:
-    """Return True if `TransactionSource` already links these two canonicals.
+    """Return True if `TransactionSource` already links this SMS source.
 
     Prevents double-writing the link when the matcher is run multiple times.
     """
@@ -91,6 +111,7 @@ async def _existing_source_link(
         await db.execute(
             select(TransactionSource.id).where(
                 TransactionSource.canonical_txn_id == canonical_id,
+                TransactionSource.parsed_txn_id == parsed_txn_id,
                 TransactionSource.match_method == "sms_statement_match",
             ).limit(1)
         )
@@ -146,14 +167,23 @@ async def match_sms_to_statements(
             continue
 
         _gap_days, statement_row = best
-        if await _existing_source_link(db, statement_row.id):
+        sms_parsed_txn_id = await _sms_parsed_source_id(db, sms.id)
+        if sms_parsed_txn_id is None:
+            logger.warning(
+                "SMS canonical row %s has no parsed source; cannot link to statement %s",
+                sms.id,
+                statement_row.id,
+            )
+            continue
+
+        if await _existing_source_link(db, statement_row.id, sms_parsed_txn_id):
             matched_sms_ids.add(sms.id)
             continue
 
         db.add(
             TransactionSource(
                 canonical_txn_id=statement_row.id,
-                parsed_txn_id=None,
+                parsed_txn_id=sms_parsed_txn_id,
                 match_confidence=0.95,
                 match_method="sms_statement_match",
                 is_primary=False,

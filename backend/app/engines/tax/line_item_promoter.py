@@ -27,6 +27,10 @@ from app.models.tax_line_items import (
 logger = logging.getLogger(__name__)
 
 
+def _nullsafe_eq(column, value):
+    return column.is_(None) if value is None else column == value
+
+
 def _to_decimal(value) -> Decimal | None:
     if value is None:
         return None
@@ -43,16 +47,19 @@ async def _ais_already_present(
     fy: str,
     category: str,
     amount: Decimal,
+    sub_category: str | None,
+    deductor_pan: str | None,
     info_source: str | None,
 ) -> bool:
     stmt = select(AisLineItem.id).where(
         AisLineItem.user_id == user_id,
         AisLineItem.fy == fy,
         AisLineItem.category == category,
+        _nullsafe_eq(AisLineItem.sub_category, sub_category),
+        _nullsafe_eq(AisLineItem.deductor_pan, deductor_pan),
+        _nullsafe_eq(AisLineItem.info_source, info_source),
         AisLineItem.amount == amount,
     )
-    if info_source is not None:
-        stmt = stmt.where(AisLineItem.info_source == info_source)
     row = (await db.execute(stmt.limit(1))).first()
     return row is not None
 
@@ -72,15 +79,11 @@ async def _form26as_already_present(
         Form26AsLineItem.user_id == user_id,
         Form26AsLineItem.fy == fy,
         Form26AsLineItem.part == part,
+        _nullsafe_eq(Form26AsLineItem.deductor_tan, deductor_tan),
+        _nullsafe_eq(Form26AsLineItem.section, section),
+        _nullsafe_eq(Form26AsLineItem.amount_tds, amount_tds),
+        _nullsafe_eq(Form26AsLineItem.amount_credit, amount_credit),
     )
-    if deductor_tan is not None:
-        stmt = stmt.where(Form26AsLineItem.deductor_tan == deductor_tan)
-    if section is not None:
-        stmt = stmt.where(Form26AsLineItem.section == section)
-    if amount_tds is not None:
-        stmt = stmt.where(Form26AsLineItem.amount_tds == amount_tds)
-    if amount_credit is not None:
-        stmt = stmt.where(Form26AsLineItem.amount_credit == amount_credit)
     row = (await db.execute(stmt.limit(1))).first()
     return row is not None
 
@@ -91,15 +94,16 @@ async def _form16_already_present(
     user_id: uuid.UUID,
     fy: str,
     employer_tan: str | None,
+    employer_name: str | None,
     head: str,
 ) -> bool:
     stmt = select(Form16Item.id).where(
         Form16Item.user_id == user_id,
         Form16Item.fy == fy,
+        _nullsafe_eq(Form16Item.employer_tan, employer_tan),
+        _nullsafe_eq(Form16Item.employer_name, employer_name),
         Form16Item.head == head,
     )
-    if employer_tan is not None:
-        stmt = stmt.where(Form16Item.employer_tan == employer_tan)
     row = (await db.execute(stmt.limit(1))).first()
     return row is not None
 
@@ -137,11 +141,13 @@ async def promote_line_items(
                 counts["skipped_invalid"] += 1
                 continue
             employer_tan = (parsed.get("employer_tan") or None)
+            employer_name = (parsed.get("employer_name") or None)
             if await _form16_already_present(
                 db,
                 user_id=user_id,
                 fy=fy,
                 employer_tan=employer_tan,
+                employer_name=employer_name,
                 head=head,
             ):
                 counts["skipped_duplicate"] += 1
@@ -150,7 +156,7 @@ async def promote_line_items(
                 Form16Item(
                     user_id=user_id,
                     fy=fy,
-                    employer_name=parsed.get("employer_name"),
+                    employer_name=employer_name,
                     employer_tan=employer_tan,
                     head=head,
                     amount=amount,
@@ -210,6 +216,8 @@ async def promote_line_items(
                 fy=fy,
                 category=category,
                 amount=amount,
+                sub_category=line.get("sub_category"),
+                deductor_pan=line.get("deductor_pan"),
                 info_source=info_source,
             ):
                 counts["skipped_duplicate"] += 1
