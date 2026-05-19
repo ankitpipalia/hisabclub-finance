@@ -10,24 +10,30 @@ from app.models.conversation import ConversationMessage, ConversationThread
 from app.models.document_artifact import DocumentArtifact
 from app.models.document_knowledge_chunk import DocumentKnowledgeChunk
 from app.models.extraction_job import ExtractionJob
+from app.models.insights import MonthlySummary, RecurringPattern
+from app.models.institution import Institution
 from app.models.institution_parser_support import InstitutionParserSupport
 from app.models.institution_password_pattern import InstitutionPasswordPattern
-from app.models.institution import Institution
-from app.models.insights import MonthlySummary, RecurringPattern
 from app.models.merchant import Merchant, MerchantPattern
-from app.models.password_reset_token import PasswordResetToken
 from app.models.parsed_transaction import ParsedTransaction
+from app.models.password_reset_token import PasswordResetToken
 from app.models.raw_pdf import RawPdf
 from app.models.raw_sms import RawSms
 from app.models.review_task import ReviewTask
 from app.models.statement import Statement
 from app.models.statement_period_coverage import StatementPeriodCoverage
 from app.models.sync_cursor import SyncCursor
-from app.models.transfer_match import TransferMatch
+from app.models.tax_line_items import (
+    AisLineItem,
+    Form16Item,
+    Form26AsLineItem,
+    TaxReconciliationMatch,
+)
+from app.models.tax_portal_data import TaxPortalData
 from app.models.transaction_annotation import TransactionAnnotation
 from app.models.transaction_source import TransactionSource
-from app.models.tax_portal_data import TaxPortalData
 from app.models.transaction_split import TransactionSplit
+from app.models.transfer_match import TransferMatch
 from app.models.user import User
 from app.models.user_override import UserMerchantRule, UserOverride
 
@@ -59,7 +65,11 @@ __all__ = [
     "RecurringPattern",
     "Statement",
     "StatementPeriodCoverage",
+    "AisLineItem",
+    "Form16Item",
+    "Form26AsLineItem",
     "TaxPortalData",
+    "TaxReconciliationMatch",
     "TransactionSplit",
     "SyncCursor",
     "TransferMatch",

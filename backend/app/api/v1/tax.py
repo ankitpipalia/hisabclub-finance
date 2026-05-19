@@ -257,6 +257,24 @@ async def upload_portal_document(
         portal_row.status = "parsed"
     await db.flush()
 
+    # Sprint B.2: persist normalized line items if the parser produced any.
+    # Non-fatal: failure here doesn't reject the upload — the aggregate is
+    # already saved on `portal_row.extracted_json` for legacy callers.
+    if effective_fy and isinstance(extracted_json, dict) and extracted_json.get("lines"):
+        from app.engines.tax.line_item_promoter import promote_line_items
+
+        try:
+            await promote_line_items(
+                db=db,
+                user_id=user.id,
+                fy=effective_fy,
+                doc_artifact_id=artifact.id,
+                parsed=extracted_json,
+            )
+        except Exception:  # noqa: BLE001 — best-effort; never block the upload
+            logger = __import__("logging").getLogger(__name__)
+            logger.warning("Line-item promotion failed for %s", file_name, exc_info=True)
+
     return TaxPortalUploadResponse(
         artifact_id=str(artifact.id),
         portal_data_id=str(portal_row.id),
