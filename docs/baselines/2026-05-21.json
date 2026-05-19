@@ -1,0 +1,42 @@
+{
+  "captured_at": "2026-05-20",
+  "branch": "phase35/stabilization-tax-ca-connectors",
+  "folder": "/home/ankit/Documents/FY24-25-Ankit-details",
+  "harness": "RUN_REAL_E2E=1 pytest backend/tests/test_e2e/test_real_per_file.py",
+  "_notes": [
+    "Aggregate non-PII counts only. NEVER commit raw file paths, account masked, or other identifying data.",
+    "Source is the user's private FY24-25 folder (not in repo). Refreshed via the snippet captured in this commit's PR description.",
+    "test_real_folder_import.py is gated on Postgres being up (RLS context setter requires DB). When DB is reachable, fold its by_doc_type counts in here too.",
+    "Refuse to ship subsequent sprint commits if total_files drops or classify_errors rises."
+  ],
+  "total_files": 41,
+  "classify_errors": 0,
+  "per_file_e2e_pass_rate": "41/41 PASSED",
+  "by_bank_folder": {
+    "root": 2,
+    "BOB": 3,
+    "Demat": 22,
+    "Form-16": 5,
+    "HDFC": 1,
+    "ICICI": 3,
+    "Kotak": 3,
+    "SBI": 2
+  },
+  "by_doc_type": {
+    "unknown_pdf": 8,
+    "tax_challan": 1,
+    "interest_certificate": 3,
+    "ppf_statement": 1,
+    "dividend_report": 1,
+    "demat_trade_report": 5,
+    "demat_holdings": 9,
+    "demat_tax_report": 6,
+    "spreadsheet": 1,
+    "tax_form": 3,
+    "credit_card_statement": 2,
+    "fd_report": 1
+  },
+  "_classification_gaps_to_close_in_sprint_d": [
+    "8 files still classify as `unknown_pdf` — investigate per file in Sprint D (likely candidates: ICICI/Kotak savings statements that need template parsers)."
+  ]
+}

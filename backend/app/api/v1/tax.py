@@ -42,6 +42,8 @@ from app.engines.tax.verification import cross_verify_tax
 from app.models.document_artifact import DocumentArtifact
 from app.models.tax_portal_data import TaxPortalData
 from app.schemas.tax import (
+    ChecklistBundleResponse,
+    ChecklistItemResponse,
     DeductionUtilizationItem,
     DeductionUtilizationResponse,
     ItrRecommendationInputs,
@@ -256,6 +258,24 @@ async def upload_portal_document(
         portal_row.extracted_json = extracted_json
         portal_row.status = "parsed"
     await db.flush()
+
+    # Sprint B.2: persist normalized line items if the parser produced any.
+    # Non-fatal: failure here doesn't reject the upload — the aggregate is
+    # already saved on `portal_row.extracted_json` for legacy callers.
+    if effective_fy and isinstance(extracted_json, dict) and extracted_json.get("lines"):
+        from app.engines.tax.line_item_promoter import promote_line_items
+
+        try:
+            await promote_line_items(
+                db=db,
+                user_id=user.id,
+                fy=effective_fy,
+                doc_artifact_id=artifact.id,
+                parsed=extracted_json,
+            )
+        except Exception:  # noqa: BLE001 — best-effort; never block the upload
+            logger = __import__("logging").getLogger(__name__)
+            logger.warning("Line-item promotion failed for %s", file_name, exc_info=True)
 
     return TaxPortalUploadResponse(
         artifact_id=str(artifact.id),
@@ -623,4 +643,68 @@ async def get_reconciliation_bundle(
             )
             for report in reports
         ],
+    )
+
+
+@router.get("/checklist/{financial_year}", response_model=ChecklistBundleResponse)
+async def get_tax_checklist(
+    financial_year: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Missing-document checklist for ITR preparation.
+
+    Inspects uploaded portal docs + line items + statement coverage and
+    returns the gaps the user needs to close. Severity levels:
+     - block_filing: cannot file accurately without this
+     - warning: affects reconciliation match rate
+     - info: nice-to-have for completeness
+    """
+    from app.engines.tax.checklist import build_checklist
+
+    response = await build_checklist(db, user.id, financial_year)
+    return ChecklistBundleResponse(
+        fy=response.fy,
+        items=[
+            ChecklistItemResponse(
+                kind=item.kind,
+                severity=item.severity,
+                title=item.title,
+                detail=item.detail,
+                cta_link=item.cta_link,
+                evidence_count=item.evidence_count,
+            )
+            for item in response.items
+        ],
+    )
+
+
+
+@router.get("/export/ca-pack/{financial_year}")
+async def get_ca_pack(
+    financial_year: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """CA hand-off pack — streams a ZIP with summary, ledger, reconciliation,
+    documents index, and assumptions."""
+    from fastapi.responses import Response
+
+    from app.engines.tax.export.ca_pack import build_ca_pack
+
+    try:
+        pack = await build_ca_pack(db, user.id, financial_year)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    return Response(
+        content=pack.content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{pack.filename}"'
+            ),
+        },
     )

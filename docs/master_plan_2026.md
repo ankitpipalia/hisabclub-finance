@@ -882,3 +882,32 @@ Per feature:
 **Latest test totals:** backend 361 pass / 42 skipped (E2E gated); frontend vitest 30 pass; mobile jest 6 pass; tsc clean.
 
 **Status of this plan:** Phases 0-2 fully complete. Phases 3 + 6 + 7 partially shipped. Continuing through long-tail items in subsequent PRs.
+
+---
+
+## Phase 10 — Long-tail product roadmap
+
+These 20 ideas are the candidate pool for Phase 10. Each is a one-line entry with the user-visible value and a cross-link to the sprint that already covers the v1 (when applicable). Effort sizing is deferred until the mega-PR (Sprint A-C of `/home/ankit/.claude/plans/deep-bubbling-fiddle.md`) lands. None of these are committed deliverables — they're a triage backlog the next planning round will pick from.
+
+1. **Personal Tax Twin** — multi-FY digital tax profile (salary, deductions, AIS, 26AS, statements, prior filings) so year-over-year drift surfaces automatically.
+2. **CA Handoff Pack Generator** — shipped as Sprint B.5 (`GET /tax/export/ca-pack/{fy}`); future scope: PDF summary instead of Markdown, password-protect the zip.
+3. **Tax Readiness Score** — composite FY metric (Document Missingness × Reconciliation Match Rate × Block-filing-resolved) shown on the dashboard.
+4. **Document Missingness Engine** — v1 ships as Sprint B.4 (`engines/tax/checklist.py`); future scope: predict missing accounts from SMS/Gmail metadata and historic FY patterns.
+5. **Statement Coverage Map** — calendar grid showing which accounts/cards have statement coverage per month and where gaps exist.
+6. **Email Password Intelligence** — Sprint C.2 (password-pattern learning) + Sprint C.3 (inline-image OCR) cover v1; future scope: per-bank library that auto-resolves on first try.
+7. **SMS Confirmation Layer** — Sprint C.6 (`engines/ledger/sms_statement_match.py`) ships the matcher; future scope: visible "pending → confirmed" lifecycle on the transaction list.
+8. **Financial Evidence Graph** — graph DB over evidence pointers (statement page, email msg, SMS id, AIS row, Form-16 row, user override) so the assistant can cite chains.
+9. **Tax What-If Simulator** — v1 ships as `engines/tax/deductions.py:what_if`; future scope: dashboard slider UI with live "if you invest ₹X more in 80C" feedback.
+10. **Deduction Autopilot** — auto-detect eligible 80C/80D/24b/80TTA/80CCD items from documents and ledger, ask the user to confirm.
+11. **ITR Form Decision Engine** — shipped as `engines/tax/recommender/itr_form.py`; future scope: explain blockers in plain English and link to the required document upload.
+12. **Capital Gains Workbench** — after broker P&L parser lands (Sprint D candidate), import + reconcile + classify STCG/LTCG with the right per-FY rates (already supported by `engines/tax/capital_gains.py`).
+13. **Refund/Demand Tracker** — ingest e-Filing notices/intimations and surface them on the dashboard with deadlines.
+14. **Family Tax Optimizer** — personal-scope family view: spouse/parents health insurance under 80D, dependent deductions, shared loans, rent agreements.
+15. **LLM Proof Mode** — every AI answer shows exact evidence, prompt version, model used, redaction status, and which deterministic checks passed.
+16. **Privacy Mode Dial** — per-task routing: local-only, hosted allowed after redaction, BYOK, or no-LLM deterministic mode.
+17. **Annual Tax Rule Update Console** — admin/dev screen showing FY rules, sources (Sprint A.1 matrix), tests, last verified date, and rule-diff from previous FY.
+18. **Financial Anomaly Investigator** — not just alerts; a guided workflow to explain abnormal spending, duplicate charges, failed UPI reversals, and suspicious debits.
+19. **Connector Health Center** — Sprint C.5 (retry queue UI) ships v1; future scope: aggregate Gmail/SMS/folder/import health with last sync, failed passwords, pending retries, missing permissions.
+20. **Plain-English Money Timeline** — a timeline that explains the user's financial year like a story: income, major expenses, investments, tax events, gaps, and next actions.
+
+Each idea inherits the rules from §28 (Definition of Done): tests + source-cited tax constants + LLM eval deltas + UI states + privacy assertions + docs.

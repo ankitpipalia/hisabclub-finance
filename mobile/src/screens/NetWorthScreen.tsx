@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ActivityIndicator, Button, Card, Chip, TextInput } from 'react-native-paper';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -8,6 +8,7 @@ import type { BalanceSnapshot, NetWorthHistoryPoint } from '../api/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import { formatAmount, formatDate, formatDateShort } from '../utils/formatters';
 import { useToast } from '../components/ui/Toast';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 type ManualFormState = {
   label: string;
@@ -38,6 +39,7 @@ export default function NetWorthScreen() {
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ManualFormState>(initialFormState);
+  const [positionToDelete, setPositionToDelete] = useState<BalanceSnapshot | null>(null);
 
   const overviewQuery = useQuery({
     queryKey: ['net-worth-overview', months],
@@ -75,27 +77,18 @@ export default function NetWorthScreen() {
     }
   };
 
-  const deleteManualPosition = (snapshot: BalanceSnapshot) => {
-    Alert.alert(
-      'Delete position?',
-      `${snapshot.label} will be removed from manual net worth tracking.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await api.deleteManualNetWorthSnapshot(snapshot.id);
-              await refresh();
-              toast.success('Position deleted');
-            } catch (err: any) {
-              toast.error(err?.message || 'Could not delete manual position');
-            }
-          },
-        },
-      ],
-    );
+  const deleteManualPosition = (snapshot: BalanceSnapshot) => setPositionToDelete(snapshot);
+  const confirmDeletePosition = async () => {
+    const snapshot = positionToDelete;
+    setPositionToDelete(null);
+    if (!snapshot) return;
+    try {
+      await api.deleteManualNetWorthSnapshot(snapshot.id);
+      await refresh();
+      toast.success('Position deleted');
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not delete manual position');
+    }
   };
 
   if (overviewQuery.isLoading) {
@@ -265,6 +258,20 @@ export default function NetWorthScreen() {
           )}
         </Card.Content>
       </Card>
+
+      <ConfirmDialog
+        open={positionToDelete !== null}
+        title="Delete position?"
+        description={
+          positionToDelete
+            ? `${positionToDelete.label} will be removed from manual net worth tracking.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={confirmDeletePosition}
+        onCancel={() => setPositionToDelete(null)}
+      />
     </ScrollView>
   );
 }

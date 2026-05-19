@@ -190,3 +190,75 @@ def test_fy_25_26_new_regime_at_12l_pays_zero_thanks_to_higher_87a():
     assert result.tax_on_slabs == _D("60000.00")
     assert result.rebate_87a == _D("60000.00")
     assert result.total_tax == _D("0.00")
+
+
+# ----- Senior / super-senior old-regime slabs (Sprint A.2) -----
+
+
+def test_fy_24_25_old_regime_senior_uses_3l_exemption():
+    """Senior (60-79) under old regime: 0-3L exempt, 3-5L 5%, 5-10L 20%, >10L 30%.
+    No salary (so no std deduction adjustment ambiguity), gross ₹6L from interest.
+    Taxable = ₹6L. Slab tax = 5% on (5L-3L) + 20% on (6L-5L) = ₹10k + ₹20k = ₹30k.
+    No 87A (taxable > ₹5L). Cess 4% on ₹30k = ₹1,200. Total = ₹31,200."""
+    inputs = TaxInputs(
+        interest_income=_D("600000"),
+        is_salaried=False,
+        is_senior=True,
+    )
+    result = compute_old_regime("FY24-25", inputs)
+    assert result.taxable_income == _D("600000.00")
+    assert result.tax_on_slabs == _D("30000.00")
+    assert result.cess == _D("1200.00")
+    assert result.total_tax == _D("31200.00")
+
+
+def test_fy_24_25_old_regime_super_senior_uses_5l_exemption():
+    """Super-senior (≥80) under old regime: 0-5L exempt, 5-10L 20%, >10L 30%.
+    No salary, gross ₹6L from interest.
+    Taxable = ₹6L. Slab tax = 20% on (6L-5L) = ₹20k.
+    87A rebate cap ₹12.5k applies if taxable ≤ ₹5L — taxable is ₹6L, so no rebate.
+    Cess 4% on ₹20k = ₹800. Total = ₹20,800."""
+    inputs = TaxInputs(
+        interest_income=_D("600000"),
+        is_salaried=False,
+        is_super_senior=True,
+    )
+    result = compute_old_regime("FY24-25", inputs)
+    assert result.taxable_income == _D("600000.00")
+    assert result.tax_on_slabs == _D("20000.00")
+    assert result.cess == _D("800.00")
+    assert result.total_tax == _D("20800.00")
+
+
+def test_fy_24_25_old_regime_super_senior_at_5l_pays_zero():
+    """Super-senior earning exactly ₹5L should pay 0 (exempt up to ₹5L)."""
+    inputs = TaxInputs(
+        interest_income=_D("500000"),
+        is_salaried=False,
+        is_super_senior=True,
+    )
+    result = compute_old_regime("FY24-25", inputs)
+    assert result.taxable_income == _D("500000.00")
+    assert result.tax_on_slabs == _D("0.00")
+    assert result.total_tax == _D("0.00")
+
+
+def test_fy_24_25_new_regime_ignores_senior_flag():
+    """New regime is age-agnostic — `is_senior` must NOT change the slab table."""
+    base_inputs = TaxInputs(gross_salary=_D("1500000"), is_salaried=True)
+    senior_inputs = TaxInputs(gross_salary=_D("1500000"), is_salaried=True, is_senior=True)
+    base = compute_new_regime("FY24-25", base_inputs)
+    senior = compute_new_regime("FY24-25", senior_inputs)
+    assert base.tax_on_slabs == senior.tax_on_slabs
+    assert base.total_tax == senior.total_tax
+
+
+def test_fy_23_24_old_regime_senior_at_3l_pays_zero():
+    """Senior under FY23-24 old regime, taxable ₹3L → 0 tax (within exemption)."""
+    inputs = TaxInputs(
+        interest_income=_D("300000"),
+        is_salaried=False,
+        is_senior=True,
+    )
+    result = compute_old_regime("FY23-24", inputs)
+    assert result.total_tax == _D("0.00")

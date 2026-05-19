@@ -166,6 +166,78 @@ class GmailService:
 
         return creds
 
+    async def list_envelopes(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        account_id: uuid.UUID,
+        *,
+        lookback_days: int = 540,
+        max_messages: int = 500,
+    ) -> list:
+        """Return a list of EmailEnvelope objects for the wizard scorer.
+
+        Pulls message ids via `users.messages.list` with a date filter, then
+        fetches the metadata (From + Subject + payload.parts count) for each.
+        Body content is NOT fetched — keeps this cheap and respects user
+        privacy (the scorer doesn't need email bodies).
+        """
+        from datetime import datetime, timedelta
+
+        from app.engines.gmail.sender_discovery import EmailEnvelope
+
+        result = await db.execute(
+            select(ConnectedAccount).where(
+                ConnectedAccount.id == account_id,
+                ConnectedAccount.user_id == user_id,
+                ConnectedAccount.status == "active",
+            )
+        )
+        account = result.scalar_one_or_none()
+        if not account:
+            return []
+        creds = self._get_credentials(account)
+        if not creds:
+            return []
+
+        service = build("gmail", "v1", credentials=creds)
+        cutoff = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%Y/%m/%d")
+        query = f"after:{cutoff}"
+
+        envelopes: list = []
+        try:
+            response = service.users().messages().list(
+                userId="me", q=query, maxResults=min(max_messages, 500)
+            ).execute()
+            for msg_ref in response.get("messages", []):
+                msg = service.users().messages().get(
+                    userId="me",
+                    id=msg_ref["id"],
+                    format="metadata",
+                    metadataHeaders=["From", "Subject"],
+                ).execute()
+                headers = {
+                    h["name"]: h["value"]
+                    for h in msg.get("payload", {}).get("headers", [])
+                }
+                has_attachment = bool(
+                    [
+                        p for p in msg.get("payload", {}).get("parts", []) or []
+                        if (p.get("filename") or "").strip()
+                    ]
+                )
+                envelopes.append(
+                    EmailEnvelope(
+                        from_address=headers.get("From", ""),
+                        subject=headers.get("Subject", ""),
+                        has_attachment=has_attachment,
+                    )
+                )
+        except Exception:  # noqa: BLE001 — fail soft; UI shows empty
+            logger.exception("Gmail envelope fetch failed for account %s", account_id)
+            return []
+        return envelopes
+
     async def sync_statements(
         self, db: AsyncSession, user_id: uuid.UUID, account_id: uuid.UUID
     ) -> dict:

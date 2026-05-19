@@ -19,11 +19,13 @@ import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import AnimatedOrbs from '../components/AnimatedOrbs';
 import BrandMark from '../components/BrandMark';
 import FadeInView from '../components/FadeInView';
+import { useToast } from '../components/ui/Toast';
 
 export default function LoginScreen() {
   const { setAuthenticated } = useAuth();
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const toast = useToast();
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   const [serverUrl, setServerUrlLocal] = useState('');
@@ -67,7 +69,7 @@ export default function LoginScreen() {
 
     const trimmed = normalizeServerUrl(serverUrl);
     if (!trimmed) {
-      Alert.alert('Error', 'Please enter a server URL');
+      toast.warning('Please enter a server URL');
       return;
     }
     await setServerUrl(trimmed);
@@ -77,7 +79,7 @@ export default function LoginScreen() {
   const handleTestConnection = async () => {
     const trimmed = showCustomServer ? normalizeServerUrl(serverUrl) : DEFAULT_API_URL;
     if (!trimmed) {
-      Alert.alert('Error', 'Please enter a server URL first');
+      toast.warning('Please enter a server URL first');
       return;
     }
     await setServerUrl(trimmed);
@@ -88,11 +90,11 @@ export default function LoginScreen() {
       const ok = await api.testConnection();
       setConnectionStatus(ok ? 'ok' : 'fail');
       if (!ok) {
-        Alert.alert('Connection Failed', 'Could not reach the server. Check the URL and try again.');
+        toast.error('Could not reach the server. Check the URL and try again.');
       }
     } catch {
       setConnectionStatus('fail');
-      Alert.alert('Connection Failed', 'Could not reach the server.');
+      toast.error('Could not reach the server.');
     } finally {
       setTestingConnection(false);
     }
@@ -100,15 +102,15 @@ export default function LoginScreen() {
 
   const handleSubmit = async () => {
     if (!email.trim()) {
-      Alert.alert('Error', 'Email is required');
+      toast.warning('Email is required');
       return;
     }
     if (!isForgotMode && !password.trim()) {
-      Alert.alert('Error', 'Email and password are required');
+      toast.warning('Email and password are required');
       return;
     }
     if (isSetupMode && !isForgotMode && !displayName.trim()) {
-      Alert.alert('Error', 'Display name is required for setup');
+      toast.warning('Display name is required for setup');
       return;
     }
 
@@ -142,7 +144,7 @@ export default function LoginScreen() {
         setAuthenticated(true);
       }
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Authentication failed');
+      toast.error(err.message || 'Authentication failed');
     } finally {
       setLoading(false);
     }

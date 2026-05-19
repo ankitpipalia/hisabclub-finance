@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ActivityIndicator, Button, Card, Chip } from 'react-native-paper';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
@@ -7,6 +7,7 @@ import * as api from '../api/client';
 import type { TaxPortalData, TaxVerificationCheck } from '../api/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import { formatAmount } from '../utils/formatters';
+import { useToast } from '../components/ui/Toast';
 
 type FinancialYearOption = {
   key: string;
@@ -30,6 +31,7 @@ export default function TaxScreen() {
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const queryClient = useQueryClient();
+  const toast = useToast();
   const fyOptions = useMemo(() => buildFinancialYearOptions(5), []);
   const [selectedFy, setSelectedFy] = useState(fyOptions[0]?.key ?? '');
   const [documentType, setDocumentType] = useState('form_16');
@@ -58,7 +60,7 @@ export default function TaxScreen() {
       await queryClient.invalidateQueries({ queryKey: ['tax-verification', selectedFy] });
       await queryClient.invalidateQueries({ queryKey: ['tax-portal-data', selectedFy] });
     } catch (err: any) {
-      Alert.alert('Upload failed', err?.message || 'Could not upload portal document');
+      toast.error(err?.message || 'Could not upload portal document');
     } finally {
       setUploading(false);
     }

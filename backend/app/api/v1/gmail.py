@@ -309,3 +309,82 @@ async def delete_password_pattern(pattern_id: str, db: DbSession, user: CurrentU
     if deleted is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pattern not found")
     return {"message": "Password pattern deleted"}
+
+
+# ─── Sprint C.1: Sender-discovery wizard ──────────────
+
+
+class SenderSuggestionResponse(BaseModel):
+    sender: str
+    domain: str
+    score: float
+    message_count: int
+    attachment_count: int
+    is_known_bank: bool
+    is_allowlisted: bool
+    sample_subjects: list[str]
+
+
+class WizardResponse(BaseModel):
+    account_id: str
+    provider_email: str | None = None
+    suggestions: list[SenderSuggestionResponse]
+
+
+@router.get("/wizard/senders/{account_id}", response_model=WizardResponse)
+async def gmail_wizard_senders(
+    account_id: str,
+    user: CurrentUser,
+    db: DbSession,
+    lookback_days: int = Query(default=540, ge=30, le=1825),
+    top_n: int = Query(default=50, ge=1, le=100),
+):
+    """Return scored senders the user can one-click-allowlist.
+
+    Score weights: known-bank domain (0.25), attachment frequency (≤0.4),
+    statement keywords (≤0.35), log volume tail (≤0.15). Max 1.0.
+    """
+    from app.engines.gmail.sender_discovery import discover_senders
+
+    try:
+        account_uuid = uuid.UUID(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid account id") from exc
+
+    account = (
+        await db.execute(
+            select(ConnectedAccount).where(
+                ConnectedAccount.id == account_uuid,
+                ConnectedAccount.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Connected account not found")
+
+    envelopes = await gmail_service.list_envelopes(
+        db, user.id, account_uuid, lookback_days=lookback_days
+    )
+    suggestions = discover_senders(
+        envelopes,
+        allowlisted_senders=set(account.sender_allowlist or []),
+        top_n=top_n,
+    )
+
+    return WizardResponse(
+        account_id=str(account.id),
+        provider_email=account.provider_email,
+        suggestions=[
+            SenderSuggestionResponse(
+                sender=s.sender,
+                domain=s.domain,
+                score=s.score,
+                message_count=s.message_count,
+                attachment_count=s.attachment_count,
+                is_known_bank=s.is_known_bank,
+                is_allowlisted=s.is_allowlisted,
+                sample_subjects=list(s.sample_subjects),
+            )
+            for s in suggestions
+        ],
+    )
