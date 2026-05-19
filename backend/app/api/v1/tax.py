@@ -30,6 +30,7 @@ from app.engines.tax.deductions import (
 )
 from app.engines.tax.recommender.itr_form import ItrInputs as _ItrInputs
 from app.engines.tax.recommender.itr_form import recommend_itr_form
+from app.engines.tax.reconcile.wire import run_all_reconciliations
 from app.engines.tax.regime import TaxInputs as _TaxInputs
 from app.engines.tax.regime import RegimeComparison as _RegimeComparison
 from app.engines.tax.regime import RegimeResult as _RegimeResult
@@ -44,6 +45,9 @@ from app.schemas.tax import (
     DeductionUtilizationResponse,
     ItrRecommendationInputs,
     ItrRecommendationResponse,
+    ReconciliationBundleResponse,
+    ReconciliationLineResponse,
+    ReconciliationReportResponse,
     RegimeComparisonResponse,
     RegimeInputs,
     RegimeResultResponse,
@@ -554,3 +558,61 @@ async def post_what_if(
 @router.get("/rules/supported", response_model=list[str])
 async def get_supported_fys(user: CurrentUser):  # noqa: ARG001
     return _supported_fys()
+
+
+@router.get(
+    "/reconciliation/{financial_year}",
+    response_model=ReconciliationBundleResponse,
+)
+async def get_reconciliation_bundle(
+    financial_year: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Run AIS / 26AS / Form-16 reconciliation against the user's ledger.
+
+    Returns one report per source. Each report lists matched, missing-in-
+    ledger, missing-in-portal, and amount-mismatch lines so the UI can drive
+    the missing-document checklist + reconciliation table.
+    """
+    try:
+        reports = await run_all_reconciliations(db, user.id, financial_year)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return ReconciliationBundleResponse(
+        fy=financial_year,
+        reports=[
+            ReconciliationReportResponse(
+                fy=report.fy,
+                source=report.source,
+                matched=report.matched,
+                missing_in_ledger=report.missing_in_ledger,
+                missing_in_portal=report.missing_in_portal,
+                amount_mismatch=report.amount_mismatch,
+                total_portal_amount=str(report.total_portal_amount),
+                total_ledger_amount=str(report.total_ledger_amount),
+                lines=[
+                    ReconciliationLineResponse(
+                        kind=line.kind,
+                        label=line.label,
+                        portal_amount=str(line.portal_amount)
+                        if line.portal_amount is not None
+                        else None,
+                        ledger_amount=str(line.ledger_amount)
+                        if line.ledger_amount is not None
+                        else None,
+                        delta=str(line.delta) if line.delta is not None else None,
+                        portal_date=line.portal_date,
+                        ledger_canonical_id=line.ledger_canonical_id,
+                        notes=line.notes,
+                    )
+                    for line in report.lines
+                ],
+            )
+            for report in reports
+        ],
+    )

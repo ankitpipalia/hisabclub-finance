@@ -8,6 +8,7 @@ import * as api from '../api/client';
 import type { Institution, OnboardingBank } from '../api/types';
 import type { RootStackParamList } from '../navigation/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
+import { useToast } from '../components/ui/Toast';
 
 type AccountDraft = {
   account_type: string;
@@ -20,6 +21,7 @@ type NavProp = NativeStackNavigationProp<RootStackParamList>;
 export default function OnboardingScreen() {
   const navigation = useNavigation<NavProp>();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [step, setStep] = useState(1);
@@ -102,7 +104,7 @@ export default function OnboardingScreen() {
       await queryClient.invalidateQueries({ queryKey: ['onboarding-status'] });
       setStep(2);
     } catch (err: any) {
-      Alert.alert('Profile save failed', err?.message || 'Could not save profile');
+      toast.error(err?.message || 'Could not save profile');
     } finally {
       setSaving(false);
     }
@@ -125,7 +127,7 @@ export default function OnboardingScreen() {
       await queryClient.invalidateQueries({ queryKey: ['onboarding-status'] });
       setStep(4);
     } catch (err: any) {
-      Alert.alert('Bank setup failed', err?.message || 'Could not save bank setup');
+      toast.error(err?.message || 'Could not save bank setup');
     } finally {
       setSaving(false);
     }
@@ -138,7 +140,7 @@ export default function OnboardingScreen() {
       await queryClient.invalidateQueries({ queryKey: ['onboarding-status'] });
       navigation.replace('MainTabs');
     } catch (err: any) {
-      Alert.alert('Onboarding failed', err?.message || 'Could not complete onboarding');
+      toast.error(err?.message || 'Could not complete onboarding');
     } finally {
       setSaving(false);
     }

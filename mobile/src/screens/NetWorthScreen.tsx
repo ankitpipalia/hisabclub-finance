@@ -7,6 +7,7 @@ import * as api from '../api/client';
 import type { BalanceSnapshot, NetWorthHistoryPoint } from '../api/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import { formatAmount, formatDate, formatDateShort } from '../utils/formatters';
+import { useToast } from '../components/ui/Toast';
 
 type ManualFormState = {
   label: string;
@@ -30,6 +31,7 @@ const initialFormState = (): ManualFormState => ({
 
 export default function NetWorthScreen() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [months, setMonths] = useState(12);
@@ -48,7 +50,7 @@ export default function NetWorthScreen() {
 
   const submitManualPosition = async () => {
     if (!form.label.trim() || !form.balance.trim()) {
-      Alert.alert('Missing fields', 'Label and balance are required.');
+      toast.warning('Label and balance are required');
       return;
     }
     setSaving(true);
@@ -65,8 +67,9 @@ export default function NetWorthScreen() {
       setForm(initialFormState());
       setShowForm(false);
       await refresh();
+      toast.success('Manual position saved');
     } catch (err: any) {
-      Alert.alert('Save failed', err?.message || 'Could not save manual position');
+      toast.error(err?.message || 'Could not save manual position');
     } finally {
       setSaving(false);
     }
@@ -85,8 +88,9 @@ export default function NetWorthScreen() {
             try {
               await api.deleteManualNetWorthSnapshot(snapshot.id);
               await refresh();
+              toast.success('Position deleted');
             } catch (err: any) {
-              Alert.alert('Delete failed', err?.message || 'Could not delete manual position');
+              toast.error(err?.message || 'Could not delete manual position');
             }
           },
         },

@@ -18,6 +18,7 @@ import type { RootStackParamList } from '../navigation/types';
 import AmountText from '../components/AmountText';
 import { formatDate } from '../utils/formatters';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
+import { useToast } from '../components/ui/Toast';
 
 type DetailRoute = RouteProp<RootStackParamList, 'TransactionDetail'>;
 
@@ -60,6 +61,7 @@ export default function TransactionDetailScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { id } = route.params;
   const queryClient = useQueryClient();
+  const toast = useToast();
   const { colors } = useAppTheme();
   const COLORS = colors;
   const styles = useMemo(() => createStyles(COLORS), [COLORS]);
@@ -115,9 +117,9 @@ export default function TransactionDetailScreen() {
       });
       await queryClient.invalidateQueries({ queryKey: ['transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['transaction-detail', id] });
-      Alert.alert('Saved', 'Transaction updated successfully');
+      toast.success('Transaction updated successfully');
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to update transaction');
+      toast.error(err.message || 'Failed to update transaction');
     } finally {
       setSaving(false);
     }
@@ -149,12 +151,12 @@ export default function TransactionDetailScreen() {
   const handleSplit = async () => {
     if (!transaction) return;
     if (splitDrafts.length < 2) {
-      Alert.alert('Split requires 2 parts', 'Add at least two split parts.');
+      toast.warning('Add at least two split parts');
       return;
     }
     const total = splitDrafts.reduce((sum, item) => sum + Math.round(Number(item.amount || 0) * 100), 0);
     if (total !== Math.round(transaction.amount * 100)) {
-      Alert.alert('Split total mismatch', 'Split amounts must sum to the original transaction amount.');
+      toast.warning('Split amounts must sum to the original transaction amount');
       return;
     }
 
@@ -177,9 +179,9 @@ export default function TransactionDetailScreen() {
       await api.splitTransaction(transaction.id, payload);
       await queryClient.invalidateQueries({ queryKey: ['transactions'] });
       await queryClient.invalidateQueries({ queryKey: ['transaction-detail', id] });
-      Alert.alert('Split created', 'Child transactions were created and the original was excluded.');
+      toast.success('Split created — child transactions added, original excluded');
     } catch (err: any) {
-      Alert.alert('Split failed', err.message || 'Failed to split transaction');
+      toast.error(err.message || 'Failed to split transaction');
     } finally {
       setSplitting(false);
     }

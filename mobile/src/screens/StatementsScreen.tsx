@@ -17,6 +17,7 @@ import EmptyState from '../components/EmptyState';
 import { formatDate, formatAmount } from '../utils/formatters';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import type { RootStackParamList } from '../navigation/types';
+import { useToast } from '../components/ui/Toast';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -177,6 +178,7 @@ export default function StatementsScreen() {
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [rereviewingId, setRereviewingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -193,8 +195,9 @@ export default function StatementsScreen() {
       await api.rereviewStatement(statement.id);
       await queryClient.invalidateQueries({ queryKey: ['statements'] });
       await refetch();
+      toast.success('Re-review started');
     } catch (err: any) {
-      Alert.alert('Re-review failed', err?.message || 'Could not re-review this statement.');
+      toast.error(err?.message || 'Could not re-review this statement');
     } finally {
       setRereviewingId(null);
     }
@@ -215,8 +218,9 @@ export default function StatementsScreen() {
               await api.deleteStatement(statement.id);
               await queryClient.invalidateQueries({ queryKey: ['statements'] });
               await refetch();
+              toast.success('Statement deleted');
             } catch (err: any) {
-              Alert.alert('Delete failed', err?.message || 'Could not delete this statement.');
+              toast.error(err?.message || 'Could not delete this statement');
             } finally {
               setDeletingId(null);
             }

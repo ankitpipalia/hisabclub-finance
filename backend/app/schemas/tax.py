@@ -172,3 +172,31 @@ class WhatIfResponse(BaseModel):
     saving_old: str
     saving_new: str
 
+
+class ReconciliationLineResponse(BaseModel):
+    kind: str  # matched | missing_in_ledger | missing_in_portal | amount_mismatch
+    label: str
+    portal_amount: str | None = None
+    ledger_amount: str | None = None
+    delta: str | None = None
+    portal_date: date | None = None
+    ledger_canonical_id: str | None = None
+    notes: str
+
+
+class ReconciliationReportResponse(BaseModel):
+    fy: str
+    source: str
+    matched: int
+    missing_in_ledger: int
+    missing_in_portal: int
+    amount_mismatch: int
+    total_portal_amount: str
+    total_ledger_amount: str
+    lines: list[ReconciliationLineResponse] = Field(default_factory=list)
+
+
+class ReconciliationBundleResponse(BaseModel):
+    fy: str
+    reports: list[ReconciliationReportResponse] = Field(default_factory=list)
+

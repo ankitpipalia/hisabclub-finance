@@ -21,6 +21,7 @@ import { formatAmount, formatDate } from '../utils/formatters';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import FadeInView from '../components/FadeInView';
 import AnimatedOrbs from '../components/AnimatedOrbs';
+import { useToast } from '../components/ui/Toast';
 
 type FilterTab = 'upcoming' | 'paid';
 
@@ -30,6 +31,7 @@ export default function BillsScreen() {
   const COLORS = colors;
   const styles = useMemo(() => createStyles(COLORS), [COLORS]);
   const [activeTab, setActiveTab] = useState<FilterTab>('upcoming');
+  const toast = useToast();
 
   const billsQuery = useQuery({
     queryKey: ['bills'],
@@ -44,9 +46,10 @@ export default function BillsScreen() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['bills'] });
+      toast.success('Bill marked as paid');
     },
     onError: (error: Error) => {
-      Alert.alert('Error', error.message || 'Failed to mark bill as paid');
+      toast.error(error.message || 'Failed to mark bill as paid');
     },
   });
 
