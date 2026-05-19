@@ -19,6 +19,7 @@ import BrandMark from '../components/BrandMark';
 import FadeInView from '../components/FadeInView';
 import AnimatedOrbs from '../components/AnimatedOrbs';
 import { DEFAULT_API_DOMAIN, DEFAULT_API_URL } from '../utils/constants';
+import { useToast } from '../components/ui/Toast';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -27,6 +28,7 @@ export default function SettingsScreen() {
   const auth = useAuth();
   const { colors, mode, setMode } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const toast = useToast();
 
   const [serverUrl, setServerUrlLocal] = useState('');
   const [savingUrl, setSavingUrl] = useState(false);
@@ -58,22 +60,22 @@ export default function SettingsScreen() {
     if (!showCustomServer) {
       await resetServerUrl();
       setServerUrlLocal(DEFAULT_API_URL);
-      Alert.alert('Saved', 'Using the default HisabClub domain');
+      toast.success('Using the default HisabClub domain');
       return;
     }
 
     const trimmed = normalizeServerUrl(serverUrl);
     if (!trimmed) {
-      Alert.alert('Error', 'Please enter a server URL');
+      toast.warning('Please enter a server URL');
       return;
     }
     setSavingUrl(true);
     try {
       await setServerUrl(trimmed);
       setServerUrlLocal(trimmed);
-      Alert.alert('Saved', 'Server URL updated');
+      toast.success('Server URL updated');
     } catch {
-      Alert.alert('Error', 'Failed to save server URL');
+      toast.error('Failed to save server URL');
     } finally {
       setSavingUrl(false);
     }
@@ -87,12 +89,12 @@ export default function SettingsScreen() {
     try {
       const ok = await api.testConnection();
       if (ok) {
-        Alert.alert('Success', 'Server is reachable');
+        toast.success('Server is reachable');
       } else {
-        Alert.alert('Failed', 'Could not connect to the server');
+        toast.error('Could not connect to the server');
       }
     } catch {
-      Alert.alert('Failed', 'Could not connect to the server');
+      toast.error('Could not connect to the server');
     } finally {
       setTestingConnection(false);
     }
