@@ -756,6 +756,26 @@ class ApiClient {
     );
   }
 
+  async getTaxChecklist(fy: string) {
+    return this.request<TaxChecklistBundle>(
+      `/tax/checklist/${encodeURIComponent(fy)}`,
+    );
+  }
+
+  /** Returns a Blob the caller can use to trigger a browser download. */
+  async downloadCaPack(fy: string): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const response = await fetch(
+      `${API_BASE}/tax/export/ca-pack/${encodeURIComponent(fy)}`,
+      { headers },
+    );
+    if (!response.ok) {
+      throw new ApiError(response.status, `CA pack download failed (${response.status})`);
+    }
+    return await response.blob();
+  }
+
   async getSupportedFys() {
     return this.request<string[]>('/tax/rules/supported');
   }
@@ -1753,6 +1773,20 @@ export interface TaxReconciliationReport {
 export interface TaxReconciliationBundle {
   fy: string;
   reports: TaxReconciliationReport[];
+}
+
+export interface TaxChecklistItem {
+  kind: string;
+  severity: 'block_filing' | 'warning' | 'info';
+  title: string;
+  detail: string;
+  cta_link: string | null;
+  evidence_count: number;
+}
+
+export interface TaxChecklistBundle {
+  fy: string;
+  items: TaxChecklistItem[];
 }
 
 export interface BalanceSnapshot {

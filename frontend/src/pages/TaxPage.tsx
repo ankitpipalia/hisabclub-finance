@@ -10,6 +10,8 @@ import type {
 } from '../api/client';
 import { ShieldAlert, Link2, RefreshCw } from 'lucide-react';
 import RegimeComparator from '../components/tax/RegimeComparator';
+import ChecklistCard from '../components/tax/ChecklistCard';
+import CaExportButton from '../components/tax/CaExportButton';
 
 const formatAmount = (amount: number) =>
   new Intl.NumberFormat('en-IN', {
@@ -122,10 +124,13 @@ export default function TaxPage() {
             New-regime tax estimate, document coverage, and transfer reconciliation.
           </p>
         </div>
-        <button onClick={() => void load(selectedFy)} className="hc-btn hc-btn-outline">
-          <RefreshCw size={14} strokeWidth={1.5} />
-          Refresh
-        </button>
+        <div style={{ display: 'inline-flex', gap: 8 }}>
+          <CaExportButton fy={selectedFy} />
+          <button onClick={() => void load(selectedFy)} className="hc-btn hc-btn-outline">
+            <RefreshCw size={14} strokeWidth={1.5} />
+            Refresh
+          </button>
+        </div>
       </header>
 
       <section className="hc-panel">
@@ -152,6 +157,8 @@ export default function TaxPage() {
           </div>
         </div>
       </section>
+
+      <ChecklistCard fy={selectedFy} />
 
       <RegimeComparator fy={selectedFy} />
 
