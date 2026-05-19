@@ -72,9 +72,16 @@ def test_fy_window_handles_lowercase():
     assert start == date(2024, 4, 1)
 
 
-def test_fy_window_rejects_bad_format():
+def test_fy_window_accepts_long_form_year():
+    """2024-25 now resolves to FY24-25 — see _normalize_fy."""
+    start, end = _fy_window("2024-25")
+    assert start == date(2024, 4, 1)
+    assert end == date(2025, 3, 31)
+
+
+def test_fy_window_rejects_garbage():
     with pytest.raises(ValueError):
-        _fy_window("2024-25")
+        _fy_window("not-a-fy")
 
 
 @pytest.mark.asyncio

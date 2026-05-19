@@ -29,15 +29,16 @@ _TAX_KEYWORDS = ("INCOME TAX", "ITD ", "TIN-PROTEAN", "ADVANCE TAX", "SELF ASSES
 
 
 def _fy_window(financial_year: str) -> tuple[date, date]:
-    """Parse "FY24-25" → (date(2024,4,1), date(2025,3,31)).
+    """Parse FY input to (start, end). Accepts FY24-25, 24-25, 2024-25, etc.
 
-    Requires the "FY" prefix to disambiguate from calendar-year ranges.
+    To stay strict about garbage, the resulting normalized FY must exist in
+    the rules registry. The window is Apr 1 of start year → Mar 31 of end.
     """
-    cleaned = (financial_year or "").strip().upper()
-    if not cleaned.startswith("FY"):
-        raise ValueError(f"Unrecognized FY format: {financial_year!r}")
-    fy = cleaned[2:]
-    parts = fy.split("-")
+    from app.engines.tax.rules.registry import _normalize_fy
+
+    normalized = _normalize_fy(financial_year or "")
+    inner = normalized[2:]  # strip "FY"
+    parts = inner.split("-")
     if len(parts) != 2:
         raise ValueError(f"Unrecognized FY format: {financial_year!r}")
     try:

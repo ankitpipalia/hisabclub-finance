@@ -28,18 +28,41 @@ _REGISTRY: dict[str, TaxRules] = {
 }
 
 
+def _normalize_fy(fy: str) -> str:
+    """Map common FY input shapes to the canonical FYYY-YY key.
+
+    Accepted shapes (case-insensitive):
+        - "FY24-25"      → "FY24-25"
+        - "fy24-25"      → "FY24-25"
+        - "FY 24-25"     → "FY24-25"
+        - "24-25"        → "FY24-25"
+        - "2024-25"      → "FY24-25"  (long-form start year)
+        - "2024-2025"    → "FY24-25"
+    """
+    raw = (fy or "").strip().upper().replace("FY", "").replace(" ", "")
+    if "-" not in raw:
+        return f"FY{raw}"
+    left, right = raw.split("-", 1)
+    if len(left) == 4 and left.isdigit():
+        left = left[-2:]
+    if len(right) == 4 and right.isdigit():
+        right = right[-2:]
+    return f"FY{left}-{right}"
+
+
 def get_rules(fy: str) -> TaxRules:
     """Return the rules for a financial year string like 'FY24-25'.
 
-    Accepts the canonical form `FYYY-YY` only. Raises `ValueError` for any
-    unsupported FY so callers fail loudly instead of silently using stale
+    Tolerant of common shapes (see `_normalize_fy`). Raises `ValueError` for
+    any unsupported FY so callers fail loudly instead of silently using stale
     rules.
     """
-    normalized = (fy or "").strip().upper()
+    normalized = _normalize_fy(fy)
     if normalized in _REGISTRY:
         return _REGISTRY[normalized]
     raise ValueError(
-        f"Unsupported financial year: {fy!r}. Supported: {sorted(_REGISTRY)}"
+        f"Unsupported financial year: {fy!r} (normalized to {normalized!r}). "
+        f"Supported: {sorted(_REGISTRY)}"
     )
 
 
