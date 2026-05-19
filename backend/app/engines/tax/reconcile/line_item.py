@@ -14,6 +14,7 @@ returned a degenerate `lines: []`).
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -190,25 +191,41 @@ async def reconcile_ais_line_items(
             missing_in_ledger += 1
             continue
 
-        best: tuple[Decimal, CanonicalTransaction] | None = None
+        # Sprint 1.1: signal-based scoring. For every candidate that's within
+        # amount tolerance, compute (amount, date, TAN, PAN, employer) signals
+        # and pick the highest-scoring one. Beats first-match-wins because
+        # it disambiguates two same-amount candidates by date/identity.
+        best: tuple[Decimal, CanonicalTransaction, MatchSignals] | None = None
         for cand in candidates:
             cand_amt = Decimal(str(cand.amount))
-            if _within_tolerance(line.amount, cand_amt):
-                gap = abs(line.amount - cand_amt)
-                if best is None or gap < best[0]:
-                    best = (gap, cand)
+            if not _within_tolerance(line.amount, cand_amt):
+                continue
+            signals = MatchSignals(
+                amount_gap=abs(line.amount - cand_amt),
+                portal_amount=line.amount,
+                date_gap_days=None,  # AIS rows don't carry a per-row date today
+                tan_match=False,  # AIS uses PAN, not TAN
+                pan_match=False,  # canonical doesn't expose PAN today
+                employer_match=False,
+                deductor_pan=line.deductor_pan,
+            )
+            score = _score_signals(signals)
+            if best is None or score > _score_signals(best[2]):
+                best = (score, cand, signals)
 
         if best is not None:
-            gap, cand = best
+            score, cand, signals = best
             db.add(
                 TaxReconciliationMatch(
                     user_id=user_id,
                     source_table="ais_line_items",
                     source_row_id=line.id,
                     canonical_transaction_id=cand.id,
-                    match_score=_score(gap, line.amount),
-                    match_kind="amount_window",
+                    match_score=score,
+                    match_kind=_classify_match_kind(signals),
                     matched_by="auto",
+                    match_signals=_signals_to_audit_dict(signals),
+                    source_deductor_pan=signals.deductor_pan,
                 )
             )
             matched_canonical_ids.add(cand.id)
@@ -226,7 +243,11 @@ async def reconcile_ais_line_items(
                     delta=line.amount - Decimal(str(cand.amount)),
                     portal_date=None,
                     ledger_canonical_id=str(cand.id),
-                    notes=f"Tolerance: ₹{_DEFAULT_AMOUNT_TOLERANCE}",
+                    notes=(
+                        f"Tolerance: ₹{_DEFAULT_AMOUNT_TOLERANCE}; "
+                        f"match_kind={_classify_match_kind(signals)}; "
+                        f"score={score}"
+                    ),
                 )
             )
         else:
@@ -299,11 +320,115 @@ async def reconcile_ais_line_items(
 
 
 def _score(gap: Decimal, total: Decimal) -> Decimal:
-    """Compute a 0..1 match score; closer = higher."""
+    """Compute a 0..1 match score; closer = higher.
+
+    Legacy aggregate-only scorer; kept for the Form-16 + 26AS aggregate paths
+    that have not been refactored to signal-based scoring yet. AIS line-item
+    matches go through `_score_signals` instead.
+    """
     if total == 0:
         return Decimal("0.500")
     quality = max(Decimal("0"), Decimal("1") - (gap / total))
     return quality.quantize(Decimal("0.001"))
+
+
+# --------------------------------------------------------------------------- #
+# Sprint 1.1: Signal-based scorer
+# --------------------------------------------------------------------------- #
+
+# Weight per signal; total = 1.00.
+_W_AMOUNT = Decimal("0.40")
+_W_DATE = Decimal("0.25")
+_W_TAN = Decimal("0.20")
+_W_PAN = Decimal("0.10")
+_W_EMPLOYER = Decimal("0.05")
+
+
+@dataclass(frozen=True)
+class MatchSignals:
+    """Inputs the scorer reads off a candidate match. All optional — the
+    scorer just weights whatever's present and skips the rest."""
+
+    amount_gap: Decimal | None  # absolute ₹ gap
+    portal_amount: Decimal | None  # for relative-tolerance computation
+    date_gap_days: int | None  # |portal_date - ledger_date|
+    tan_match: bool = False
+    pan_match: bool = False
+    employer_match: bool = False
+    # Echo through to the audit record (no scoring weight).
+    deductor_tan: str | None = None
+    deductor_pan: str | None = None
+    employer_tan: str | None = None
+
+
+def _amount_subscore(gap: Decimal | None, total: Decimal | None) -> Decimal:
+    """Amount component: 1.0 at exact match, 0 once gap/total exceeds 5%."""
+    if gap is None or total is None or total <= Decimal("0"):
+        return Decimal("0")
+    if gap == Decimal("0"):
+        return Decimal("1")
+    relative = gap / total
+    # Linear decay from 1.0 at gap=0 to 0.0 at gap/total = 0.05.
+    if relative >= Decimal("0.05"):
+        return Decimal("0")
+    return (Decimal("1") - relative * Decimal("20")).quantize(Decimal("0.001"))
+
+
+def _date_subscore(gap_days: int | None) -> Decimal:
+    """Date component: 1.0 at 0 days, 0.5 at ±3 days, 0 beyond ±7."""
+    if gap_days is None:
+        return Decimal("0")
+    g = abs(gap_days)
+    if g == 0:
+        return Decimal("1")
+    if g <= 3:
+        return Decimal("0.5")
+    if g <= 7:
+        return Decimal("0.25")
+    return Decimal("0")
+
+
+def _score_signals(signals: MatchSignals) -> Decimal:
+    """Composite 0..1 score that gives TAN-exact + same-day + amount-perfect
+    a score close to 1.0, falling off cleanly as signals weaken.
+    """
+    score = (
+        _amount_subscore(signals.amount_gap, signals.portal_amount) * _W_AMOUNT
+        + _date_subscore(signals.date_gap_days) * _W_DATE
+        + (Decimal("1") if signals.tan_match else Decimal("0")) * _W_TAN
+        + (Decimal("1") if signals.pan_match else Decimal("0")) * _W_PAN
+        + (Decimal("1") if signals.employer_match else Decimal("0")) * _W_EMPLOYER
+    )
+    return min(Decimal("1"), score).quantize(Decimal("0.001"))
+
+
+def _classify_match_kind(signals: MatchSignals) -> str:
+    """Pick a short label for the dashboard.
+
+    Order matters: pick the strongest single discriminator. TAN match wins
+    over PAN match over amount+date over amount-only.
+    """
+    if signals.tan_match:
+        return "tan_exact"
+    if signals.pan_match:
+        return "pan_amount"
+    if signals.employer_match:
+        return "employer_amount"
+    if signals.date_gap_days is not None and abs(signals.date_gap_days) <= 3:
+        return "amount_date_window"
+    return "amount_only_fallback"
+
+
+def _signals_to_audit_dict(signals: MatchSignals) -> dict:
+    """Serialise to the JSONB column on `tax_reconciliation_matches.match_signals`."""
+    return {
+        "amount_gap": str(signals.amount_gap) if signals.amount_gap is not None else None,
+        "portal_amount": str(signals.portal_amount) if signals.portal_amount is not None else None,
+        "date_gap_days": signals.date_gap_days,
+        "tan_match": signals.tan_match,
+        "pan_match": signals.pan_match,
+        "employer_match": signals.employer_match,
+    }
 
 
 async def reconcile_form16_line_items(

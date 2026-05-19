@@ -117,6 +117,14 @@ class TaxReconciliationMatch(UUIDPrimaryKeyMixin, Base):
     match_score: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
     match_kind: Mapped[str | None] = mapped_column(String(40))
     matched_by: Mapped[str] = mapped_column(String(20), default="auto", nullable=False)
+    # Phase 4 (Sprint 1.1): structured signal snapshot so the API can explain
+    # *why* a match happened — {"tan": true, "amount_gap": 0.5, ...}.
+    match_signals: Mapped[dict | None] = mapped_column(JSONB)
+    # Denormalised columns so the dashboard can group matches by deductor or
+    # employer without a four-way join.
+    source_deductor_tan: Mapped[str | None] = mapped_column(String(20))
+    source_deductor_pan: Mapped[str | None] = mapped_column(String(20))
+    source_employer_tan: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
