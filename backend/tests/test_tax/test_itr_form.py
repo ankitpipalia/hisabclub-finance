@@ -7,7 +7,7 @@ from decimal import Decimal
 from app.engines.tax.recommender.itr_form import ItrInputs, recommend_itr_form
 
 
-def _D(s: str) -> Decimal:
+def _D(s: str) -> Decimal:  # noqa: N802 -- pytest-style helper
     return Decimal(s)
 
 

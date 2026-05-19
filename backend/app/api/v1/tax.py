@@ -8,7 +8,6 @@ import re
 import uuid
 import zipfile
 from datetime import datetime, timezone
-
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -16,24 +15,26 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.dependencies import CurrentUser, DbSession
+from app.engines.insights.tax_planning import compute_tax_planning_summary
 from app.engines.intake.tax_document_parser import extract_tax_document_metadata
 from app.engines.parser.pdf_utils import decrypt_pdf
 from app.engines.parser.pdf_utils import extract_text as extract_pdf_text
 from app.engines.tax.ais_parser import parse_ais_document
-from app.engines.tax.form16_parser import parse_form16_document
-from app.engines.tax.form_26as_parser import parse_form_26as_document
-from app.engines.insights.tax_planning import compute_tax_planning_summary
 from app.engines.tax.deductions import (
     WhatIfScenario as _WhatIfScenario,
+)
+from app.engines.tax.deductions import (
     compute_utilization,
     what_if,
 )
+from app.engines.tax.form16_parser import parse_form16_document
+from app.engines.tax.form_26as_parser import parse_form_26as_document
 from app.engines.tax.recommender.itr_form import ItrInputs as _ItrInputs
 from app.engines.tax.recommender.itr_form import recommend_itr_form
 from app.engines.tax.reconcile.wire import run_all_reconciliations
-from app.engines.tax.regime import TaxInputs as _TaxInputs
 from app.engines.tax.regime import RegimeComparison as _RegimeComparison
 from app.engines.tax.regime import RegimeResult as _RegimeResult
+from app.engines.tax.regime import TaxInputs as _TaxInputs
 from app.engines.tax.regime import compare as _compare_regimes
 from app.engines.tax.rules import get_rules as _get_tax_rules
 from app.engines.tax.rules import supported_fys as _supported_fys
@@ -130,7 +131,10 @@ async def upload_portal_document(
 ):
     normalized_type = (document_type or "").strip().lower()
     if normalized_type not in _SUPPORTED_PORTAL_TYPES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported tax document type.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported tax document type.",
+        )
 
     content = await file.read()
     if not content:
@@ -179,7 +183,11 @@ async def upload_portal_document(
         text=text,
         source_filename=file_name,
     )
-    effective_fy = financial_year or extracted_json.get("financial_year") or generic_metadata.get("financial_year")
+    effective_fy = (
+        financial_year
+        or extracted_json.get("financial_year")
+        or generic_metadata.get("financial_year")
+    )
 
     storage_dir = os.path.join(settings.upload_dir, str(user.id), "artifacts")
     os.makedirs(storage_dir, exist_ok=True)

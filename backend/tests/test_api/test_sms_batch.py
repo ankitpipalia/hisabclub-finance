@@ -57,7 +57,10 @@ def _valid_item(**overrides):
         "sms_hash": "h-" + uuid.uuid4().hex[:12],
         "sender_address": "AD-HDFCBK",
         "sender_id": "HDFCBK",
-        "body": "INR 1,200.00 debited from a/c XXXX1234 on 21-04-25 at AMAZON. Avl bal INR 5,000.00",
+        "body": (
+            "INR 1,200.00 debited from a/c XXXX1234 on 21-04-25 at AMAZON. "
+            "Avl bal INR 5,000.00"
+        ),
         "sms_timestamp": datetime(2025, 4, 21, 13, 30, tzinfo=timezone.utc),
         "classification": "bank_transaction",
         "bank_name": "HDFC Bank",

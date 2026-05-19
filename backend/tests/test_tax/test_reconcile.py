@@ -14,7 +14,7 @@ from app.engines.tax.reconcile.form_26as import (
 )
 
 
-def _D(s: str) -> Decimal:
+def _D(s: str) -> Decimal:  # noqa: N802 -- pytest-style helper
     return Decimal(s)
 
 

@@ -18,7 +18,7 @@ from app.engines.tax.regime import (
 )
 
 
-def _D(s: str) -> Decimal:
+def _D(s: str) -> Decimal:  # noqa: N802 -- pytest-style helper
     return Decimal(s)
 
 
