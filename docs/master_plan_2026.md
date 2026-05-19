@@ -860,4 +860,25 @@ Per feature:
 
 ---
 
-**Status of this plan:** Phase 0 complete (this commit). Phase 1 next.
+---
+
+## Implementation Status (2026-05-20)
+
+| Phase | Status | Notes |
+|---|---|---|
+| Phase 0 | ✅ shipped | This master plan committed (commit `71f883f`). |
+| Phase 1 | ✅ shipped | SMS bypass removed (flag default `True`); review-resolve audit preserved (user_override stamp + payload_json breadcrumb); ambiguous CR/DR default-route to review; BudgetsPage `confirm()` → ConfirmDialog. 5 new regression tests. |
+| Phase 2 | ✅ shipped | FY-versioned rules registry (FY23-24, FY24-25, FY25-26 — source-cited); old vs new regime calculator with 87A/surcharge/cess/Sec 24(b)/equity STCG-LTCG; deductions engine + HRA + utilization tracker + what-if optimizer; ITR-1/2/3/4 recommender; 5 new `/api/v1/tax/*` endpoints; web RegimeComparator widget on TaxPage. 47 unit + 7 API + 2 component tests. |
+| Phase 3 | 🟡 partial | AIS/26AS/Form-16 ↔ ledger reconciliation engines + `GET /api/v1/tax/reconciliation/{fy}` wire-up endpoint shipped (16 + 5 tests). Connector wizard / inline-image password OCR not yet started. |
+| Phase 4 | ⏳ pending | 12 new doc parsers; review workspace v2. |
+| Phase 5 | ⏳ pending | LLM triad + eval harness + tax-rule RAG. |
+| Phase 6 | 🟡 partial | Global FY selector (FYContext + FYSelector widget in header + sidebar; 5 tests); ConfirmDialog rollout (BudgetsPage); mobile Alert→toast sweep (6 screens migrated). Animation library + iOS assets still pending. |
+| Phase 7 | 🟡 in-progress | LLM eval harness + Playwright/Maestro pending. Backend unit/API coverage grew by 80 tests this PR. |
+| Phase 8 | ⏳ pending | Router decomposition, bundle splitting, pgvector tuning. |
+| Phase 9 | ⏳ pending | DPDP consent, audit log, data export/delete, self-host bootstrap. |
+| Phase 10 | ⏳ pending | Long-tail features. |
+
+**Latest CI on branch `phase1/correctness-and-tax-foundation`:** all jobs green at commit `fe613cb`.
+**Latest test totals:** backend 361 pass / 42 skipped (E2E gated); frontend vitest 30 pass; mobile jest 6 pass; tsc clean.
+
+**Status of this plan:** Phases 0-2 fully complete. Phases 3 + 6 + 7 partially shipped. Continuing through long-tail items in subsequent PRs.
