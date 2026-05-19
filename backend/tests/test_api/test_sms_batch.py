@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-
 from app.api.v1 import sms as sms_api
 from app.extraction.models import ValidationStatus
 from app.schemas.sms import SmsBatchItemRequest, SmsBatchRequest

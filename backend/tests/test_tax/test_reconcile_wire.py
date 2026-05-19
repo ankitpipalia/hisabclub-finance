@@ -12,7 +12,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-
 from app.api.v1 import tax as tax_api
 from app.engines.tax.reconcile.wire import _fy_window
 

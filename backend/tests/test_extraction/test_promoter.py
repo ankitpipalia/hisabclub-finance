@@ -5,7 +5,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
-
 from app.extraction.models import (
     ExtractionSource,
     RawTransaction,

@@ -10,7 +10,6 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-
 from app.engines.tax.rules import get_rules, supported_fys
 
 

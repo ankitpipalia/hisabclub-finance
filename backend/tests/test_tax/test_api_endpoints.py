@@ -10,7 +10,6 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-
 from app.api.v1 import tax as tax_api
 from app.schemas.tax import (
     ItrRecommendationInputs,
