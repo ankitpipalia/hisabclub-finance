@@ -5,9 +5,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/client';
 import type { ConversationMessage, ConversationThread } from '../api/types';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
+import { useToast } from '../components/ui/Toast';
 
 export default function AssistantScreen() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const { colors } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -42,7 +44,7 @@ export default function AssistantScreen() {
       setSelectedThreadId(thread.id);
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
     } catch (err: any) {
-      Alert.alert('Create thread failed', err?.message || 'Could not create thread');
+      toast.error(err?.message || 'Could not create thread');
     } finally {
       setBusy(false);
     }
@@ -60,7 +62,7 @@ export default function AssistantScreen() {
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
       await queryClient.invalidateQueries({ queryKey: ['conversation-messages', selectedThreadId] });
     } catch (err: any) {
-      Alert.alert('Reply failed', err?.message || 'Could not send reply');
+      toast.error(err?.message || 'Could not send reply');
     } finally {
       setBusy(false);
     }
@@ -74,7 +76,7 @@ export default function AssistantScreen() {
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
       await queryClient.invalidateQueries({ queryKey: ['conversation-messages', selectedThreadId] });
     } catch (err: any) {
-      Alert.alert('Resolve failed', err?.message || 'Could not resolve thread');
+      toast.error(err?.message || 'Could not resolve thread');
     } finally {
       setBusy(false);
     }
