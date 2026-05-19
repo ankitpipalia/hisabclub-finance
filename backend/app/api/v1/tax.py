@@ -9,6 +9,8 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 
+from decimal import Decimal, InvalidOperation
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 
@@ -21,16 +23,38 @@ from app.engines.tax.ais_parser import parse_ais_document
 from app.engines.tax.form16_parser import parse_form16_document
 from app.engines.tax.form_26as_parser import parse_form_26as_document
 from app.engines.insights.tax_planning import compute_tax_planning_summary
+from app.engines.tax.deductions import (
+    WhatIfScenario as _WhatIfScenario,
+    compute_utilization,
+    what_if,
+)
+from app.engines.tax.recommender.itr_form import ItrInputs as _ItrInputs
+from app.engines.tax.recommender.itr_form import recommend_itr_form
+from app.engines.tax.regime import TaxInputs as _TaxInputs
+from app.engines.tax.regime import RegimeComparison as _RegimeComparison
+from app.engines.tax.regime import RegimeResult as _RegimeResult
+from app.engines.tax.regime import compare as _compare_regimes
+from app.engines.tax.rules import get_rules as _get_tax_rules
+from app.engines.tax.rules import supported_fys as _supported_fys
 from app.engines.tax.verification import cross_verify_tax
 from app.models.document_artifact import DocumentArtifact
 from app.models.tax_portal_data import TaxPortalData
 from app.schemas.tax import (
+    DeductionUtilizationItem,
+    DeductionUtilizationResponse,
+    ItrRecommendationInputs,
+    ItrRecommendationResponse,
+    RegimeComparisonResponse,
+    RegimeInputs,
+    RegimeResultResponse,
     TaxPlanningResponse,
     TaxPlanningSectionResponse,
     TaxPortalDataResponse,
     TaxPortalUploadResponse,
     TaxVerificationCheck,
     TaxVerificationResponse,
+    WhatIfResponse,
+    WhatIfScenarioRequest,
 )
 
 router = APIRouter()
@@ -296,3 +320,237 @@ async def get_tax_planning(
             for s in sections
         ],
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 (master_plan_2026.md §10): FY-versioned tax engine — regime
+# comparator, deduction utilization, ITR form recommender, what-if optimizer.
+# --------------------------------------------------------------------------- #
+
+
+def _to_decimal(name: str, raw: str | None) -> Decimal:
+    if raw is None or raw == "":
+        return Decimal("0")
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid decimal for {name}: {raw!r}",
+        ) from exc
+
+
+def _to_inputs(body: RegimeInputs) -> _TaxInputs:
+    return _TaxInputs(
+        gross_salary=_to_decimal("gross_salary", body.gross_salary),
+        interest_income=_to_decimal("interest_income", body.interest_income),
+        dividend_income=_to_decimal("dividend_income", body.dividend_income),
+        rental_income_net=_to_decimal("rental_income_net", body.rental_income_net),
+        other_income=_to_decimal("other_income", body.other_income),
+        capital_gain_equity_stcg=_to_decimal(
+            "capital_gain_equity_stcg", body.capital_gain_equity_stcg
+        ),
+        capital_gain_equity_ltcg=_to_decimal(
+            "capital_gain_equity_ltcg", body.capital_gain_equity_ltcg
+        ),
+        capital_gain_other=_to_decimal("capital_gain_other", body.capital_gain_other),
+        deduction_80c=_to_decimal("deduction_80c", body.deduction_80c),
+        deduction_80ccd_1b=_to_decimal("deduction_80ccd_1b", body.deduction_80ccd_1b),
+        deduction_80ccd_2=_to_decimal("deduction_80ccd_2", body.deduction_80ccd_2),
+        deduction_80d_self=_to_decimal("deduction_80d_self", body.deduction_80d_self),
+        deduction_80d_parents=_to_decimal(
+            "deduction_80d_parents", body.deduction_80d_parents
+        ),
+        deduction_80e=_to_decimal("deduction_80e", body.deduction_80e),
+        deduction_80g=_to_decimal("deduction_80g", body.deduction_80g),
+        deduction_80gg=_to_decimal("deduction_80gg", body.deduction_80gg),
+        deduction_80tta_or_ttb=_to_decimal(
+            "deduction_80tta_or_ttb", body.deduction_80tta_or_ttb
+        ),
+        home_loan_interest_self=_to_decimal(
+            "home_loan_interest_self", body.home_loan_interest_self
+        ),
+        home_loan_interest_letout=_to_decimal(
+            "home_loan_interest_letout", body.home_loan_interest_letout
+        ),
+        is_salaried=body.is_salaried,
+        is_pensioner=body.is_pensioner,
+        is_senior=body.is_senior,
+    )
+
+
+def _serialize_regime_result(result: _RegimeResult) -> RegimeResultResponse:
+    return RegimeResultResponse(
+        regime=result.regime,
+        fy=result.fy,
+        gross_total_income=str(result.gross_total_income),
+        standard_deduction=str(result.standard_deduction),
+        section_24b_deduction=str(result.section_24b_deduction),
+        chapter_via_deduction=str(result.chapter_via_deduction),
+        taxable_income=str(result.taxable_income),
+        tax_on_slabs=str(result.tax_on_slabs),
+        tax_on_special_rate_income=str(result.tax_on_special_rate_income),
+        base_tax=str(result.base_tax),
+        rebate_87a=str(result.rebate_87a),
+        tax_after_rebate=str(result.tax_after_rebate),
+        surcharge=str(result.surcharge),
+        cess=str(result.cess),
+        total_tax=str(result.total_tax),
+        notes=list(result.notes),
+    )
+
+
+def _serialize_comparison(comparison: _RegimeComparison) -> RegimeComparisonResponse:
+    rules = _get_tax_rules(comparison.fy)
+    return RegimeComparisonResponse(
+        fy=comparison.fy,
+        old=_serialize_regime_result(comparison.old),
+        new=_serialize_regime_result(comparison.new),
+        recommendation=comparison.recommendation,
+        delta=str(comparison.delta),
+        sources=list(rules.sources),
+    )
+
+
+def _ensure_supported_fy(fy: str) -> None:
+    try:
+        _get_tax_rules(fy)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported financial year {fy!r}. "
+                f"Supported: {_supported_fys()}"
+            ),
+        ) from exc
+
+
+@router.post("/regime/compare", response_model=RegimeComparisonResponse)
+async def post_regime_compare(
+    body: RegimeInputs,
+    fy: str,
+    user: CurrentUser,  # noqa: ARG001 — auth-gate only
+):
+    """Compute old vs new regime side-by-side for the given FY + inputs.
+
+    No DB access. The user's `auth-gate only` ensures only authenticated
+    callers reach this endpoint, but the calculation is a pure function so
+    it can be cached at the edge later.
+    """
+    _ensure_supported_fy(fy)
+    comparison = _compare_regimes(fy, _to_inputs(body))
+    return _serialize_comparison(comparison)
+
+
+@router.get("/deductions/utilization", response_model=DeductionUtilizationResponse)
+async def get_deduction_utilization(
+    fy: str,
+    user: CurrentUser,  # noqa: ARG001
+    deduction_80c: str = "0",
+    deduction_80ccd_1b: str = "0",
+    deduction_80d_self: str = "0",
+    deduction_80d_parents: str = "0",
+    deduction_80e: str = "0",
+    deduction_80tta_or_ttb: str = "0",
+    home_loan_interest_self: str = "0",
+    is_senior: bool = False,
+):
+    _ensure_supported_fy(fy)
+    claims = {
+        "deduction_80c": _to_decimal("deduction_80c", deduction_80c),
+        "deduction_80ccd_1b": _to_decimal("deduction_80ccd_1b", deduction_80ccd_1b),
+        "deduction_80d_self": _to_decimal("deduction_80d_self", deduction_80d_self),
+        "deduction_80d_parents": _to_decimal(
+            "deduction_80d_parents", deduction_80d_parents
+        ),
+        "deduction_80e": _to_decimal("deduction_80e", deduction_80e),
+        "deduction_80tta_or_ttb": _to_decimal(
+            "deduction_80tta_or_ttb", deduction_80tta_or_ttb
+        ),
+        "home_loan_interest_self": _to_decimal(
+            "home_loan_interest_self", home_loan_interest_self
+        ),
+    }
+    report = compute_utilization(fy, claims, is_senior=is_senior)
+    return DeductionUtilizationResponse(
+        fy=report.fy,
+        items=[
+            DeductionUtilizationItem(
+                section=item.section,
+                cap=str(item.cap) if item.cap is not None else None,
+                claimed=str(item.claimed),
+                remaining=str(item.remaining) if item.remaining is not None else None,
+                description=item.description,
+            )
+            for item in report.items
+        ],
+    )
+
+
+@router.post("/itr/recommend", response_model=ItrRecommendationResponse)
+async def post_itr_recommend(
+    body: ItrRecommendationInputs,
+    user: CurrentUser,  # noqa: ARG001
+):
+    inputs = _ItrInputs(
+        total_income=_to_decimal("total_income", body.total_income),
+        has_business_income=body.has_business_income,
+        opted_into_presumptive_44ad_44ada=body.opted_into_presumptive_44ad_44ada,
+        has_capital_gains_non_112a_carveout=body.has_capital_gains_non_112a_carveout,
+        has_more_than_one_house_property=body.has_more_than_one_house_property,
+        has_brought_forward_house_property_loss=body.has_brought_forward_house_property_loss,
+        has_foreign_asset_or_income=body.has_foreign_asset_or_income,
+        is_director_or_holds_unlisted_shares=body.is_director_or_holds_unlisted_shares,
+        agricultural_income=_to_decimal(
+            "agricultural_income", body.agricultural_income
+        ),
+        is_resident=body.is_resident,
+    )
+    rec = recommend_itr_form(inputs)
+    return ItrRecommendationResponse(
+        form=rec.form,
+        reasons=list(rec.reasons),
+        blockers_for_itr1=list(rec.blockers_for_itr1),
+    )
+
+
+@router.post("/optimizer/whatif", response_model=WhatIfResponse)
+async def post_what_if(
+    body: WhatIfScenarioRequest,
+    user: CurrentUser,  # noqa: ARG001
+):
+    _ensure_supported_fy(body.fy)
+    baseline_inputs = _to_inputs(body.baseline)
+    scenario = _WhatIfScenario(
+        deduction_80c=_to_decimal("scenario_80c", body.scenario_80c),
+        deduction_80ccd_1b=_to_decimal(
+            "scenario_80ccd_1b", body.scenario_80ccd_1b
+        ),
+        deduction_80d_self=_to_decimal(
+            "scenario_80d_self", body.scenario_80d_self
+        ),
+        deduction_80d_parents=_to_decimal(
+            "scenario_80d_parents", body.scenario_80d_parents
+        ),
+        deduction_80e=_to_decimal("scenario_80e", body.scenario_80e),
+        deduction_80g=_to_decimal("scenario_80g", body.scenario_80g),
+        deduction_80tta_or_ttb=_to_decimal(
+            "scenario_80tta_or_ttb", body.scenario_80tta_or_ttb
+        ),
+        home_loan_interest_self=_to_decimal(
+            "scenario_home_loan_interest_self", body.scenario_home_loan_interest_self
+        ),
+    )
+    result = what_if(body.fy, baseline_inputs, scenario)
+    return WhatIfResponse(
+        fy=result.fy,
+        baseline=_serialize_comparison(result.baseline),
+        scenario=_serialize_comparison(result.scenario),
+        saving_old=str(result.saving_old),
+        saving_new=str(result.saving_new),
+    )
+
+
+@router.get("/rules/supported", response_model=list[str])
+async def get_supported_fys(user: CurrentUser):  # noqa: ARG001
+    return _supported_fys()
