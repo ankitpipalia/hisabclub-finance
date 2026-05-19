@@ -134,13 +134,25 @@ async def resolve_review_task(
     merged = 0
     ignored = 0
     now = datetime.now(timezone.utc)
+    override_reason_text = (
+        request.reason_code
+        and f"user-resolved quarantined row via review: {request.reason_code}"
+    ) or "user-resolved quarantined row via review"
     for parsed in rows:
+        was_quarantined = bool(parsed.is_quarantined)
         parsed.reviewer_user_id = user.id
         parsed.override_reason_code = request.reason_code or ("manual_" + action)
         parsed.reviewed_at = now
         parsed.is_quarantined = False
 
         if action == "promote":
+            # The user explicitly authorized this row. We keep
+            # `validation_status="valid"` because the human is the higher
+            # authority, but we stamp the canonical with `user_override` so
+            # the audit trail records that this row was previously flagged.
+            # The prior-validation snapshot is also archived in the review
+            # task payload below so it survives even if the canonical is
+            # later edited.
             canonical = await promote_to_canonical(
                 db=db,
                 user_id=user.id,
@@ -149,7 +161,12 @@ async def resolve_review_task(
                 account_type=statement.account_type,
                 account_masked=statement.account_number_masked,
                 validation_status="valid",
+                validation_errors=None,
             )
+            if was_quarantined:
+                canonical.user_override = True
+                canonical.override_reason = override_reason_text
+                canonical.override_at = now
             if getattr(canonical, "_hc_was_dedup_merge", False):
                 merged += 1
             else:
@@ -166,6 +183,14 @@ async def resolve_review_task(
         "promoted_count": promoted,
         "merged_count": merged,
         "ignored_count": ignored,
+        # Audit-trail breadcrumb: capture which parsed rows were quarantined
+        # at the moment the user resolved them. This survives later edits to
+        # the resulting canonical and lets the UI/Assistant show "this row
+        # was previously flagged and then approved by user".
+        "resolved_quarantined_parsed_ids": [
+            str(row.id) for row in rows if hasattr(row, "id")
+        ],
+        "resolved_reason_code": request.reason_code,
     }
 
     statement.quarantined_row_count = 0
