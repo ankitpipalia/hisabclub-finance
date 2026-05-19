@@ -26,9 +26,8 @@ from __future__ import annotations
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
-
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "phase35_tax_line_items"
 down_revision: Union[str, None] = "phase3_review_nullable_statement"

@@ -8,7 +8,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-
 from app.engines.ledger.sms_statement_match import (
     _AMOUNT_TOLERANCE,
     match_sms_to_statements,
