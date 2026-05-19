@@ -20,6 +20,7 @@ import FadeInView from '../components/FadeInView';
 import AnimatedOrbs from '../components/AnimatedOrbs';
 import { DEFAULT_API_DOMAIN, DEFAULT_API_URL } from '../utils/constants';
 import { useToast } from '../components/ui/Toast';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -42,6 +43,8 @@ export default function SettingsScreen() {
   const [wipePassword, setWipePassword] = useState('');
   const [wipeConfirmation, setWipeConfirmation] = useState('');
   const [wipingData, setWipingData] = useState(false);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const [wipePending, setWipePending] = useState(false);
 
   const meQuery = useQuery({
     queryKey: ['me'],
@@ -100,28 +103,23 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: () => auth.logout(),
-      },
-    ]);
+  const handleLogout = () => setLogoutPending(true);
+  const confirmLogout = () => {
+    setLogoutPending(false);
+    auth.logout();
   };
 
   const handleChangePassword = async () => {
     if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
-      Alert.alert('Error', 'Fill in all password fields');
+      toast.warning('Fill in all password fields');
       return;
     }
     if (newPassword.length < 8) {
-      Alert.alert('Error', 'Password must be at least 8 characters long');
+      toast.warning('Password must be at least 8 characters long');
       return;
     }
     if (newPassword !== confirmPassword) {
-      Alert.alert('Error', 'New passwords do not match');
+      toast.warning('New passwords do not match');
       return;
     }
 
@@ -131,21 +129,22 @@ export default function SettingsScreen() {
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      Alert.alert('Password updated', result.message);
+      toast.success(result.message || 'Password updated');
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Could not change password');
+      toast.error(err.message || 'Could not change password');
     } finally {
       setChangingPassword(false);
     }
   };
 
   const doClearData = async () => {
+    setWipePending(false);
     if (!wipePassword.trim()) {
-      Alert.alert('Error', 'Current password is required');
+      toast.warning('Current password is required');
       return;
     }
     if (wipeConfirmation.trim().toUpperCase() !== 'CLEAR MY DATA') {
-      Alert.alert('Error', 'Type CLEAR MY DATA to confirm');
+      toast.warning('Type CLEAR MY DATA to confirm');
       return;
     }
 
@@ -155,31 +154,18 @@ export default function SettingsScreen() {
       const totalRows = Object.values(result.deleted_rows || {}).reduce((sum, value) => sum + value, 0);
       setWipePassword('');
       setWipeConfirmation('');
-      Alert.alert(
-        'Data cleared',
-        `${result.message}\nRows deleted: ${totalRows}\nFiles deleted: ${result.deleted_files}`,
+      toast.success(
+        `${result.message || 'Data cleared'} — ${totalRows} rows, ${result.deleted_files} files`,
+        6000,
       );
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Could not clear data');
+      toast.error(err.message || 'Could not clear data');
     } finally {
       setWipingData(false);
     }
   };
 
-  const handleClearData = () => {
-    Alert.alert(
-      'Delete all user data?',
-      'This permanently deletes statements, transactions, uploaded PDFs, and local LLM memory for this user.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete All Data',
-          style: 'destructive',
-          onPress: doClearData,
-        },
-      ],
-    );
-  };
+  const handleClearData = () => setWipePending(true);
 
   const user = meQuery.data;
 
@@ -555,6 +541,26 @@ export default function SettingsScreen() {
       >
         Logout
       </Button>
+
+      <ConfirmDialog
+        open={logoutPending}
+        title="Logout"
+        description="Are you sure you want to logout?"
+        confirmLabel="Logout"
+        variant="destructive"
+        onConfirm={confirmLogout}
+        onCancel={() => setLogoutPending(false)}
+      />
+
+      <ConfirmDialog
+        open={wipePending}
+        title="Delete all user data?"
+        description="This permanently deletes statements, transactions, uploaded PDFs, and local LLM memory for this user."
+        confirmLabel="Delete All Data"
+        variant="destructive"
+        onConfirm={doClearData}
+        onCancel={() => setWipePending(false)}
+      />
     </ScrollView>
   );
 }

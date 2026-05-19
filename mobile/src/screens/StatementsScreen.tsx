@@ -18,6 +18,7 @@ import { formatDate, formatAmount } from '../utils/formatters';
 import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import type { RootStackParamList } from '../navigation/types';
 import { useToast } from '../components/ui/Toast';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -181,6 +182,7 @@ export default function StatementsScreen() {
   const toast = useToast();
   const [rereviewingId, setRereviewingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [statementToDelete, setStatementToDelete] = useState<Statement | null>(null);
 
   const { data, isLoading, isRefetching, refetch } = useQuery({
     queryKey: ['statements'],
@@ -203,31 +205,22 @@ export default function StatementsScreen() {
     }
   };
 
-  const handleDelete = (statement: Statement) => {
-    Alert.alert(
-      'Delete statement',
-      `Delete ${statement.bank_name} statement and remove its local LLM memory?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setDeletingId(statement.id);
-              await api.deleteStatement(statement.id);
-              await queryClient.invalidateQueries({ queryKey: ['statements'] });
-              await refetch();
-              toast.success('Statement deleted');
-            } catch (err: any) {
-              toast.error(err?.message || 'Could not delete this statement');
-            } finally {
-              setDeletingId(null);
-            }
-          },
-        },
-      ],
-    );
+  const handleDelete = (statement: Statement) => setStatementToDelete(statement);
+  const confirmDelete = async () => {
+    const statement = statementToDelete;
+    setStatementToDelete(null);
+    if (!statement) return;
+    try {
+      setDeletingId(statement.id);
+      await api.deleteStatement(statement.id);
+      await queryClient.invalidateQueries({ queryKey: ['statements'] });
+      await refetch();
+      toast.success('Statement deleted');
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not delete this statement');
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleReview = (statement: Statement) => {
@@ -252,26 +245,41 @@ export default function StatementsScreen() {
   }
 
   return (
-    <FlatList
-      style={styles.container}
-      contentContainerStyle={styles.listContent}
-      data={statements}
-      keyExtractor={(item) => item.id}
-      renderItem={({ item }) => (
-        <StatementCard
-          statement={item}
-          colors={colors}
-          rereviewing={rereviewingId === item.id}
-          deleting={deletingId === item.id}
-          onRereview={handleRereview}
-          onDelete={handleDelete}
-          onReview={handleReview}
-        />
-      )}
-      refreshControl={
-        <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
-      }
-    />
+    <>
+      <FlatList
+        style={styles.container}
+        contentContainerStyle={styles.listContent}
+        data={statements}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <StatementCard
+            statement={item}
+            colors={colors}
+            rereviewing={rereviewingId === item.id}
+            deleting={deletingId === item.id}
+            onRereview={handleRereview}
+            onDelete={handleDelete}
+            onReview={handleReview}
+          />
+        )}
+        refreshControl={
+          <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+        }
+      />
+      <ConfirmDialog
+        open={statementToDelete !== null}
+        title="Delete statement"
+        description={
+          statementToDelete
+            ? `Delete ${statementToDelete.bank_name} statement and remove its local LLM memory?`
+            : undefined
+        }
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={confirmDelete}
+        onCancel={() => setStatementToDelete(null)}
+      />
+    </>
   );
 }
 

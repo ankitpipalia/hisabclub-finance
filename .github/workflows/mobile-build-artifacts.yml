@@ -55,7 +55,11 @@ jobs:
 
       - name: Install dependencies
         timeout-minutes: 12
-        run: npm ci
+        # react-test-renderer 19.2.6 has a strict peer dep on react@^19.2.6 but
+        # Expo SDK 55 pins react to 19.2.0. The conflict is harmless at runtime
+        # (test renderer is dev-only). --legacy-peer-deps reproduces the same
+        # behaviour the developer gets locally.
+        run: npm ci --legacy-peer-deps
 
       - name: Validate Expo dependency graph
         timeout-minutes: 5
@@ -108,7 +112,11 @@ jobs:
 
       - name: Install dependencies
         timeout-minutes: 12
-        run: npm ci
+        # react-test-renderer 19.2.6 has a strict peer dep on react@^19.2.6 but
+        # Expo SDK 55 pins react to 19.2.0. The conflict is harmless at runtime
+        # (test renderer is dev-only). --legacy-peer-deps reproduces the same
+        # behaviour the developer gets locally.
+        run: npm ci --legacy-peer-deps
 
       - name: Validate Expo dependency graph
         timeout-minutes: 5

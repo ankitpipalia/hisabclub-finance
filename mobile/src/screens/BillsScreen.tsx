@@ -22,6 +22,7 @@ import { useAppTheme, type AppThemeColors } from '../theme/AppThemeProvider';
 import FadeInView from '../components/FadeInView';
 import AnimatedOrbs from '../components/AnimatedOrbs';
 import { useToast } from '../components/ui/Toast';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 type FilterTab = 'upcoming' | 'paid';
 
@@ -31,6 +32,7 @@ export default function BillsScreen() {
   const COLORS = colors;
   const styles = useMemo(() => createStyles(COLORS), [COLORS]);
   const [activeTab, setActiveTab] = useState<FilterTab>('upcoming');
+  const [billToPay, setBillToPay] = useState<Bill | null>(null);
   const toast = useToast();
 
   const billsQuery = useQuery({
@@ -76,19 +78,11 @@ export default function BillsScreen() {
     return `${bill.days_until_due}d left`;
   };
 
-  const handleMarkPaid = (bill: Bill) => {
-    Alert.alert(
-      'Mark as Paid',
-      `Mark ${bill.bank_name} bill of ${formatAmount(bill.total_due)} as paid?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Mark Paid',
-          onPress: () =>
-            markPaidMutation.mutate({ id: bill.id, amount: bill.total_due }),
-        },
-      ],
-    );
+  const handleMarkPaid = (bill: Bill) => setBillToPay(bill);
+  const confirmMarkPaid = () => {
+    if (!billToPay) return;
+    markPaidMutation.mutate({ id: billToPay.id, amount: billToPay.total_due });
+    setBillToPay(null);
   };
 
   const renderBillItem = ({ item }: { item: Bill }) => {
@@ -207,6 +201,19 @@ export default function BillsScreen() {
           }
         />
       )}
+
+      <ConfirmDialog
+        open={billToPay !== null}
+        title="Mark as Paid"
+        description={
+          billToPay
+            ? `Mark ${billToPay.bank_name} bill of ${formatAmount(billToPay.total_due)} as paid?`
+            : undefined
+        }
+        confirmLabel="Mark Paid"
+        onConfirm={confirmMarkPaid}
+        onCancel={() => setBillToPay(null)}
+      />
     </View>
   );
 }
